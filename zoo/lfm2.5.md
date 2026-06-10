@@ -70,6 +70,25 @@ in/out_proj (the bulk of the 1.17B params). Excluded: embedding (tied, fp16), de
 conv1d, norms, lm_head, **and the four attention projections** (the precision-critical
 path above — quantizing them flips near-tie argmaxes: 14/16).
 
+### int4lin: NO-GO (bisected 2026-06-11) — int8 is this model's floor
+
+Decode is BW-saturated on device, so int4 (the remaining decode lever) was probed with the
+gemma4-verified **linear** per-block recipe (`int4lin` / `int4lin8` modes in the conversion
+script, kept for reproducibility; bundles deleted):
+
+| probe | bundle | gate | note |
+|---|---:|---|---|
+| int4lin g32 (pure) | 1.0 GB | 14/16 FAIL | **314 tok/s on M4 Max (+24%)** — the speed was real |
+| + conv-mixer int8 rescue (`int4lin8`) | 1.1 GB | 15/16 FAIL | fixes the mid-position flip; oracle pos 1 still flips |
+| + layers-0/1 MLP int8 rescue | 1.1 GB | 15/16 FAIL | pos 1 unchanged |
+| g16 blocks + conv rescue | 1.1 GB | 15/16 FAIL | cos floor 0.90→0.95 but argmax still a special token — and **97.6 tok/s: per-block-16 scales are a 3.2× slow class on this delegate** |
+
+The surviving failure is a **short-context regime flip** (oracle position 1 = two tokens of
+context, fp32 top-2 margin 0.52 — a real miss, not a near-tie): it resists every surgical
+rescue, and recovering it would need ~all-MLP int8, which is int8lin again. Same conclusion
+as qwen3.5 (both k-means AND linear int4 fail there): **int4 tolerance is a model property;
+gemma4 passes, qwen3.5 and LFM2.5 don't.** int8lin stays the ship config.
+
 ## Numerics gating
 
 - Tier A parity ladder (fp32 eager vs HF oracle): conv block / attn block / full prefill /

@@ -160,7 +160,16 @@ per-block-32 was top-1 EXACT on gemma4** (8/8) but **qwen3.5 is int4-NO-GO at ev
 tried**: k-means g32 and g8+int8-rescue on the 0.8B, and linear per-block-32 on the 2B
 (gate 10/16 and it fails even the cache-seeded single step — transformer/SSM-in_proj damage,
 not head damage; also only 156 tok/s vs int8hu's 159, int4-linear dequant underuses BW).
-Quantization sensitivity is a model property — gate it per model. The eager quantizer
+Quantization sensitivity is a model property — gate it per model. **LFM2.5-1.2B is also
+int4-NO-GO** (3-probe bisect, 2026-06-11): pure int4lin g32 = 14/16; +int8-linear rescue of
+the conv-mixer projections fixes the mid-position flip (15/16) but a **short-context flip at
+oracle position 1 survives** conv rescue, early-layer-MLP rescue AND per-block-16 (cos climbs
+0.90→0.95, argmax stays a special token) — recovering it would need ~all-MLP int8, which IS
+int8lin. The forfeited speed was real: int4lin g32 measured **314 tok/s on M4 Max (+24% over
+int8lin's 253)** before failing the gate. Two speed rules from the same sweep: **per-block-16
+scales are a slow class on this delegate** (97.6 tok/s vs g32's 314 — 3.2×; stay at block 32),
+and int4-linear's BW win is shape-dependent (LFM +24%, gemma4 +24%, qwen-2B ~flat).
+The eager quantizer
 **silently skips tied weights** — clone the embedding table first if you actually want the
 head quantized, and measure + gate before believing it helps: untied int8 head was a no-win
 on the 0.8B (204→201, head not critical path) but on the 2B it's **+25% (127→159) yet flips
@@ -214,13 +223,17 @@ vs the best previous iPhone config (fused int8 Metal-kernel static monolith): 42
   prompts — needed the two GPU-delegate workarounds above, see
   [`../zoo/lfm2.5.md`](../zoo/lfm2.5.md)), Mamba2+attention (Granite-4.0-H /
   Falcon-H1-class: conv + ssm state = exactly 2 — **verified 2026-06-11 on
-  Granite-4.0-h-1b + 350m, the first SSM-scan rider**: at S=1 the Mamba2 selective scan
-  is a single recurrence step (the HF `use_precomputed_states` branch), loop-free like the
-  GDN step; 1b int8lin **136.5 tok/s** / fp16 103.6 on M4 Max, oracle gate 16/16 both on a
-  margin-clean oracle; 350m ships fp16 at 191 — int8 there FAILS the gate (real per-block-32
-  MLP damage + a 0.0102-margin tie decode step, see the margin rule below) *and* is no
-  faster (overhead-bound at 0.7 GB); neither LFM2.5 delegate workaround needed — per-layer
-  `SSMState` writes compile fine and NoPE attention shows no fp16 amplification, see
+  Granite-4.0-h-1b + 350m, Mac AND iPhone, the first SSM-scan rider**: at S=1 the Mamba2
+  selective scan is a single recurrence step (the HF `use_precomputed_states` branch),
+  loop-free like the GDN step; 1b int8lin **136.5 tok/s** / fp16 103.6 on M4 Max +
+  **30.2–31.3 tok/s on iPhone 17 Pro** (~84% of the naive BW ceiling ~37 — BW-saturated
+  like LFM2.5's ~87%; cold specialization 5.7 s / warm 1.9 s, no AOT, no memory
+  entitlement needed at 1.6 GB; numerics 24/24 ≡ Mac-GPU on both fixed prompts, both
+  runs), oracle gate 16/16 both bundles on a margin-clean oracle; 350m ships fp16 at 191 —
+  int8 there FAILS the gate (real per-block-32 MLP damage + a 0.0102-margin tie decode
+  step, see the margin rule below) *and* is no faster (overhead-bound at 0.7 GB); neither
+  LFM2.5 delegate workaround needed — per-layer `SSMState` writes compile fine and NoPE
+  attention shows no fp16 amplification, see
   [`../zoo/granite-4.0-h.md`](../zoo/granite-4.0-h.md)), GDN hybrids (qwen3.5 family incl. 2B —
   **verified 2026-06-11, Mac AND iPhone**: same script via `--hf-id Qwen/Qwen3.5-2B`, zero new
   work, int8lin **127 tok/s** / fp16 90.9 on M4 Max, oracle gate 16/16 both; iPhone measured

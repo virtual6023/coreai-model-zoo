@@ -144,6 +144,10 @@ vs the best previous iPhone config (fused int8 Metal-kernel static monolith): 42
 - **Doesn't fit**: pure-RNN models (no growing KV — the engine's state model assumes one),
   models whose embed+head can't live in-graph, big MoE (different problem).
 
-Apple's `coreai-models` repo is **issues-only** (no PRs), which is why the engine patch ships
-as a patch file here instead of upstream. If Apple opens the engine, the two capabilities worth
-upstreaming are: N extra fixed-shape states, and a per-token host-input hook.
+Apple's `coreai-models` repo is **issues-only** (no PRs), so engine capabilities ship from this
+repo as a **patch stack** in [`../apps/`](../apps/), applied in order on a fresh upstream clone
+(`git -C coreai-models apply <p1> <p2> …` — see [`../apps/README.md`](../apps/README.md)):
+`coreai-shared-product.patch` → `coreai-pipelined-extra-states.patch` → (future capability
+patches, one file each, each applying cleanly after the previous and building with
+`swift build -c release`). If Apple opens the engine, the two capabilities worth upstreaming
+are: N extra fixed-shape states, and a per-token host-input hook (the Gemma-4/PLE enabler).

@@ -23,6 +23,23 @@ xcrun devicectl list devices   # connected iPhone (iOS 27)
 command, `aimodelc` the binary/extension.) For specialization, `AIModelCache` / `AIModel.specialize()` and
 the full flag list: see [`aot-and-specialization.md`](aot-and-specialization.md).
 
+## Pushing model files to the device — verify the copy BEFORE the first load
+
+Push bundles into the app sandbox with `xcrun devicectl device copy to --domain-type
+appDataContainer --domain-identifier <bundle-id> --source <m>.aimodel --destination
+Documents/models/<m>.aimodel`. **Burned-in gotcha (2026-06-10): a load attempt against a
+partially-copied `.aimodel` permanently poisons the on-device specialization cache** — the cache
+(`Library/Caches/coreai-cache/<os-build>/<bundle-id>/<content-hash>/`) is keyed by content hash, so
+once a half-pushed file's load fails mid-specialize, every later load of that model errors
+`NSPOSIXErrorDomain Code=2` (ENOENT) *even after the copy completes or the file is renamed*.
+Recovery is painful (deleting the live cache dir from app code at startup hangs; uninstalling the
+app wipes `Documents/`). So: after every multi-GB push, list the destination
+(`xcrun devicectl device info files … --subdirectory Documents/models/<m>.aimodel`) and confirm
+`main.mlirb` is full-size before launching anything that loads it. AOT'd `.aimodelc` bundles skip
+the heavy on-device specialize step entirely (warm load 0.0 s) — see
+[`aot-and-specialization.md`](aot-and-specialization.md), including the ⚠️ architecture-naming rule
+(`iPhone18,1` → `h18p`, not the marketing name).
+
 ## Apple's high-level pipeline is standard-only
 
 `coreai-models/swift` (`CoreAILM` library) assumes a STANDARD model: `input_ids → logits`, single

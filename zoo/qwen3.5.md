@@ -28,6 +28,7 @@ Two engines, both 100% Core AI:
 | **static fixed-shape** (fp16 host-cache monolith, **ctx 2048**) | — | 27.7 tok/s · exact | ✗ numerics (this beta) |
 | **static + fused int8 Metal kernels** (ctx 2048, GPU argmax head) | — | **42.5–45.4 tok/s** · exact ← release config | GPU-only (custom kernels) |
 | **+ chunked prefill** (q16 blocks, int8 LUT companion graph) | — | **prefill 147 tok/s** (185-tok prompt: 4.2 s → 1.26 s; decode unchanged) | — |
+| **decode-only loop-free × pipelined engine** (int8 linear per-block-32, dynamic KV) | **204 tok/s** · 16/16 oracle | **50.3–51.5 tok/s** · 24/24 ≡ Mac-GPU (beats the int8v3 kernels; warm load 0.2 s) | — |
 
 - "The capital of France is" → " Paris." on every shipped cell (static: Mac-GPU 8/8 vs HF +
   on-device greedy correct; the int8-kernel monolith is ALSO Mac-GPU 8/8 EXACT and produced
@@ -70,6 +71,59 @@ a loop-free single-step recurrence (`use_loopfree_step`) is **bit-identical** (m
 composite at s=1. Decode runs the loop-free graph; prefill runs as chunked s=1 steps (zero-state
 OK). That makes the hybrid architecture device-deployable today, with no converter patch.
 
+### Pipelined-engine fast path: 204 tok/s on macOS (3.5× the custom-kernel CLI)
+
+The loop-free trick unlocks more than hand-rolled device loops: a **decode-only
+export** (every linear layer on `use_loopfree_step`, `input_ids` STATIC `[1,1]`,
+position_ids + KV seq still dynamic) contains no `scf.while` at all, lowers
+cleanly on the MPSGraph GPU delegate, and — because it keeps the dynamic-KV
+shape — rides Apple's **`coreai-pipelined` engine** (`EngineFactory` →
+async non-blocking encode, on-GPU argmax sampling, on-device KV growth) instead
+of a synchronous per-token `fn.run()` loop. Prefill runs as pipelined S=1 steps:
+set `COREAI_CHUNK_THRESHOLD=1` (prompt tok/s ≈ decode tok/s).
+
+Quantization sweep (M4 Max, p=128 g=256, release `llm-benchmark`):
+
+| config | bundle | decode tok/s | numerics |
+|---|---:|---:|---|
+| fp16 | 1.4 GB | 175.8 | == torch fp16, 24/24 greedy |
+| int8 k-means g32 | 1.0 GB | 113.2 | EXACT — but the 256-entry LUT gather is slow on the GPU delegate |
+| **int8 linear per-block-32 (ship)** | **1.0 GB** | **204.1** | **token-for-token == fp16-GPU; 16/16 single-step top-1 vs the fp32 HF oracle + HF-cache-seeded decode step** |
+| + untied int8 lm_head | 1.3 GB | 201.4 | 16/16 oracle PASS — **no speed win** (head matvec isn't the critical path on this delegate); int8lin stays the ship config |
+
+Notes: k-means LUTs aren't slow per se (official qwen3-0.6b runs int4-km g8 at
+1000+ tok/s) — the 256-entry int8 LUT is the slow case, 16-entry int4 is fast;
+per-block *linear* dequant (scale multiply, no LUT) is what unlocks int8 here.
+int4-km g8 fails the oracle gate on this model even with the official-recipe
+int8 per_tensor rescue (MLP-only and early-layer variants both tried; the
+per_tensor rescue is coarser than int4-g8 for the SSM in_projs) — int8 is the
+qwen3.5 floor, matching the earlier g32 finding.
+Judge quant quality by single-step top-1 vs the HF oracle or fp16-GPU sequence
+match — greedy rollouts fork from CPU-fp16 after ~17 tokens on natural prompts
+(fp16 noise, not a bug).
+
+To RUN the bundle you need the engine to carry the SSM conv/rec states: Apple's
+pipelined engine hard-requires exactly 2 states as shipped. The
+extra-states patch ([`../apps/coreai-pipelined-extra-states.patch`](../apps/coreai-pipelined-extra-states.patch))
+adds up to 2 fixed-shape extra states (zero-filled at init, bound every encode,
+zeroed on `reset()`). App-side warmup must use `queryLength=1` (the S=1 bundle;
+the engine default warms shape 256 — `llm-runner` needs
+`--warmup exact --warmup-length 1`; `llm-benchmark` is fine, it warms via a
+real trial).
+
+**iPhone 17 Pro (measured 2026-06-11, Release build, one-shot benchmark app on
+the patched engine): decode 50.3–51.5 tok/s, 24/24 token-identical to the
+Mac-GPU sequences on both fixed prompts — beats the shipped int8v3
+fused-kernel monolith (42.5–45.4) by ~12–20%** with zero custom kernels. The loop-free
+graph lowers cleanly on the iOS MPSGraph GPU delegate (no execute crash);
+cold GPU specialization 4.8 s, warm load 0.2 s. Caveat: pipelined prefill is
+S=1 (~51 tok/s), so for long prompts the static q16 chunked-prefill companion
+(147 tok/s) still wins TTFT — chunkwise-parallel GDN prefill is the open fix.
+fp16×pipelined was correctly predicted to lose (~44 ceiling) and was not run.
+
+Export: [`../conversion/export_qwen3_5_decode_pipelined.py`](../conversion/export_qwen3_5_decode_pipelined.py)
+(`int8lin` default; `fp16` / `int8` k-means / `int8hu` untied-head for comparison).
+
 ## Conversion status (macOS, vs HF eager)
 
 - Prefill + stateful decode: **cosine 1.0 / top-1 100%** (fp32).
@@ -99,7 +153,9 @@ appDataContainer`) rather than bundling it. Runtime contract + state shapes:
 
 Re-authored decoder + hybrid 4-state export live in `conversion/` (port of `coreai_models`'s macOS
 authoring path + a `qwen3_5_text` registry entry). On-device bundle: `conversion/export_qwen3_5.py
-[0.8b|2b]` (int8 k-means stateful); decode graph `export_qwen3_5_decode.py [--int8]`. HF reference
+[0.8b|2b]` (int8 k-means stateful); decode graph `export_qwen3_5_decode.py [--int8]`; **pipelined
+fast path `conversion/export_qwen3_5_decode_pipelined.py [int8lin]`** (+ the Swift engine patch
+`apps/coreai-pipelined-extra-states.patch`, run with `COREAI_CHUNK_THRESHOLD=1`). HF reference
 oracle generated separately (a transformers build with `qwen3_5`).
 
 The static iOS exports (workspace scripts, to be consolidated here): host-cache monolith

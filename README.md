@@ -15,7 +15,7 @@ on-device, with the conversion code and a knowledge base. Successor to
 
 | | iPhone 17 Pro · GPU | iPhone 17 Pro · ANE | M4 Max · GPU |
 |---|---|---|---|
-| **Qwen3.5-0.8B** | **42.5–45.4 tok/s**<br><sub>int8 fused kernels · static · ctx 2048 · prefill 147 tok/s (q16 chunks)</sub> | **14.7 tok/s**<br><sub>int8 · dynamic</sub> | **58.5 tok/s**<br><sub>int8 · dynamic</sub> |
+| **Qwen3.5-0.8B** | **50.3–51.5 tok/s**<br><sub>int8 linear · loop-free × pipelined engine (shipped app: int8 fused kernels 42.5–45.4 · prefill 147 tok/s q16 chunks)</sub> | **14.7 tok/s**<br><sub>int8 · dynamic</sub> | **204 tok/s**<br><sub>int8 linear · loop-free × pipelined engine (custom-kernel CLI: 58.5)</sub> |
 | **Gemma 4 E2B** | **22 tok/s**<br><sub>int4 k-means kernels</sub> | **6 tok/s**<br><sub>int8 · 6 chunks</sub> | **56.6–59.0 tok/s**<br><sub>int8 kernels</sub> |
 
 Measured on the iOS 27 / macOS 27 beta. Sizes, configurations, and caveats: [`zoo/`](zoo/).

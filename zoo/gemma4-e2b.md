@@ -3,6 +3,11 @@
 Gemma 4 E2B multimodal model; this card is the **text decoder** (`model_type` `gemma4` /
 `gemma4_text`). Source: `google/gemma-4-E2B-it`.
 
+**⬇️ Converted `.aimodel` bundles (ready to run):
+[mlboydaisuke/gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI)** —
+one best verified set per category: `ios-gpu/` (int4-kmeans kernels, 17.7 tok/s), `ios-ane/`
+(6 chunks, fp16-hardened, 8/8), `macos/` (int8 kernels, 56.6–59 tok/s) + shared `ios-frontend/`.
+
 Signature features (all handled in the re-authored model): 35 layers, dual head_dim (sliding 256 /
 full 512), attention **scale = 1.0** (QK-norm bounds magnitudes), per-head Q/K RMSNorm + scale-free
 V RMSNorm, **KV-sharing** (last 20 layers reuse a producer's K/V), double-wide MLP on shared

@@ -27,16 +27,17 @@ and working on-device chat apps.**
 
 ## Models (status)
 
-| Model | Type | Parity vs HF | Bundle | Mac GPU | iPhone 17 Pro |
+| Model | Type | Parity vs HF | Get it | Mac GPU | iPhone 17 Pro |
 |---|---|---|---|---|---|
-| **Qwen3.5-0.8B** | hybrid linear+full attn | top-1 exact | 969 MB int8 (dyn) / fp16 static ctx-2048 | **58.5 tok/s** | **GPU 27.7 (static, ctx 2048) · ANE 14.7 (dynamic)** |
-| **Qwen3.5-2B** | hybrid linear+full attn | top-1 exact | 2.2 GB | converts (same path) | — |
-| **Gemma 4 E2B** | multimodal (text decoder) | 8/8 exact | ~4.2 GB (3-stage, int4 core) | **56.6–59.0 tok/s** (custom Metal kernels) | **GPU 17.7 / ANE ~6 tok/s** |
+| **Qwen3.5-0.8B** | hybrid linear+full attn | top-1 exact | [**⬇️ HF: qwen3.5-0.8B-CoreAI**](https://huggingface.co/mlboydaisuke/qwen3.5-0.8B-CoreAI) (969 MB int8 dyn / 1.4 GB static ctx-2048) | **58.5 tok/s** | **GPU 27.7 (static, ctx 2048) · ANE 14.7 (dynamic)** |
+| **Qwen3.5-2B** | hybrid linear+full attn | top-1 exact | converts (same path), 2.2 GB | — | — |
+| **Gemma 4 E2B** | multimodal (text decoder) | 8/8 exact | [**⬇️ HF: gemma-4-E2B-CoreAI**](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI) (iOS GPU / iOS ANE / macOS sets) | **56.6–59.0 tok/s** (custom Metal kernels) | **GPU 17.7 / ANE ~6 tok/s** |
 | Qwen3-VL 2B | VLM | ⏳ later | — | — | — |
 | Gemma 4 E4B | multimodal (+MoE) | 🔜 same authoring path | — | — | — |
 
 All cells greedy, top-1 vs the HF eager reference; device cells measured on iOS 27 beta.
-Full matrix + caveats: [`zoo/README.md`](zoo/README.md).
+Full matrix + caveats: [`zoo/README.md`](zoo/README.md). **Ready-to-run `.aimodel` bundles are on
+Hugging Face** (links above) — no conversion needed; you only need the iOS/macOS 27 beta.
 
 Verified end-to-end: conversion + numeric parity on macOS, then re-verified on-device
 (iPhone 17 Pro, iOS 27 beta — GPU and Neural Engine). Both models run in working SwiftUI chat

@@ -4,6 +4,11 @@ Hybrid linear + full-attention decoder (Mamba/SSM-style linear mixer + periodic 
 gated-delta, partial mRoPE, MTP head). Source: `Qwen/Qwen3.5-0.8B`, `Qwen/Qwen3.5-2B`
 (image-text-to-text checkpoints; this card is the **text decoder**).
 
+**⬇️ Converted `.aimodel` bundles (ready to run):
+[mlboydaisuke/qwen3.5-0.8B-CoreAI](https://huggingface.co/mlboydaisuke/qwen3.5-0.8B-CoreAI)** —
+one best verified config per category: `ios-gpu/` (static ctx-2048, 27.7 tok/s), `ios-ane/` +
+`macos/` (dynamic int8, 14.7 / 58.5 tok/s).
+
 To our knowledge this is the first hybrid linear-attention (SSM) LLM running on Core AI —
 including on the iPhone **Neural Engine**.
 

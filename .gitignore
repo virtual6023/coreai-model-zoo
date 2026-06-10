@@ -1,0 +1,22 @@
+# Model artifacts & weights (large — never commit; reproduce via conversion/)
+*.aimodel/
+*.aimodelx/
+*.mlpackage/
+*.mlmodelc/
+*.safetensors
+*.gguf
+*.bin
+*.pt
+artifacts/
+weights/
+# Swift / Xcode
+.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+# Python
+.venv/
+__pycache__/
+*.pyc
+# macOS
+.DS_Store

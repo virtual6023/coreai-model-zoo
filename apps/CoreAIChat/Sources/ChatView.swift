@@ -14,36 +14,45 @@ struct ChatView: View {
     @State private var turns: [Turn] = []
     @State private var repoURL = ProcessInfo.processInfo.environment["GEMMA_REPO"]
         ?? Gemma4ChatEngine.defaultRepo
+    @FocusState private var inputFocused: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            // Model delivery: the load failed (or never ran) and files for this mode are missing.
-            if !engine.ready && !engine.loading {
-                let missing = engine.missingDownloads()
-                if !missing.isEmpty { downloadPanel(missing) }
-            }
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(turns) { turn in bubble(turn) }
-                        // Live model output while generating.
-                        if engine.busy {
-                            bubble(Turn(role: "model", text: engine.output.isEmpty ? "…" : engine.output,
-                                        stats: engine.stats))
-                                .id("live")
-                        }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(turns) { turn in bubble(turn) }
+                    // Live model output while generating.
+                    if engine.busy {
+                        bubble(Turn(role: "model", text: engine.output.isEmpty ? "…" : engine.output,
+                                    stats: engine.stats))
+                            .id("live")
                     }
-                    .padding()
                 }
-                .onChange(of: engine.output) { _, _ in proxy.scrollTo("live", anchor: .bottom) }
+                .padding()
             }
-            Divider()
-            inputBar
+            .onChange(of: engine.output) { _, _ in proxy.scrollTo("live", anchor: .bottom) }
+            .scrollDismissesKeyboard(.interactively)
+            // Liquid Glass: floating bars; chat content scrolls underneath the glass.
+            .safeAreaInset(edge: .top) { topBar }
+            .safeAreaInset(edge: .bottom) { inputBar }
         }
         // Mode switch (GPU monolith <-> ANE chunks): reload the engine for the selected compute unit.
         .onChange(of: engine.mode) { _, _ in Task { await engine.load() } }
+        // Raise the keyboard on launch (typing is allowed while the model loads; Send stays gated).
+        .onAppear { inputFocused = true }
+    }
+
+    private var topBar: some View {
+        GlassEffectContainer(spacing: 12) {
+            VStack(spacing: 12) {
+                header
+                // Model delivery: the load failed (or never ran) and files for this mode are missing.
+                if !engine.ready && !engine.loading {
+                    let missing = engine.missingDownloads()
+                    if !missing.isEmpty { downloadPanel(missing) }
+                }
+            }
+        }
     }
 
     private var header: some View {
@@ -60,7 +69,9 @@ struct ChatView: View {
                 .font(.caption).foregroundStyle(engine.ready ? .green : .secondary)
                 .lineLimit(1)
         }
-        .padding(.horizontal).padding(.vertical, 8)
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .glassEffect()
+        .padding(.horizontal, 8)
     }
 
     private func bubble(_ turn: Turn) -> some View {
@@ -69,9 +80,10 @@ struct ChatView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(turn.text.isEmpty ? " " : turn.text)
                     .textSelection(.enabled)
-                    .padding(10)
-                    .background(turn.role == "user" ? Color.accentColor.opacity(0.18) : Color.gray.opacity(0.15))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .foregroundStyle(turn.role == "user" ? .white : .primary)
+                    .background(turn.role == "user" ? Color.accentColor : Color(.systemGray6))
+                    .clipShape(RoundedRectangle(cornerRadius: 18))
                 if !turn.stats.isEmpty {
                     Text(turn.stats).font(.caption2).foregroundStyle(.secondary)
                 }
@@ -81,17 +93,19 @@ struct ChatView: View {
     }
 
     private var inputBar: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .bottom, spacing: 8) {
             TextField("Message", text: $input, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
                 .lineLimit(1...4)
-                .disabled(!engine.ready || engine.busy)
+                .focused($inputFocused)
+                .padding(.horizontal, 14).padding(.vertical, 9)
+                .glassEffect(in: .rect(cornerRadius: 20))
             Button {
                 Task { await send() }
             } label: {
-                Image(systemName: "arrow.up.circle.fill").font(.title2)
+                Image(systemName: "arrow.up.circle.fill").font(.system(size: 31))
             }
             .disabled(!engine.ready || engine.busy || input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .padding(.bottom, 4)
         }
         .padding(.horizontal).padding(.vertical, 8)
     }
@@ -100,6 +114,8 @@ struct ChatView: View {
         let prompt = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
         input = ""
+        // Tuck the keyboard away while generating; tapping the field brings it back.
+        inputFocused = false
         turns.append(Turn(role: "user", text: prompt))
         await engine.generate(prompt)
         turns.append(Turn(role: "model", text: engine.output, stats: engine.stats))
@@ -139,8 +155,7 @@ struct ChatView: View {
             }
         }
         .padding(10)
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .padding(.horizontal).padding(.top, 8)
+        .glassEffect(in: .rect(cornerRadius: 16))
+        .padding(.horizontal)
     }
 }

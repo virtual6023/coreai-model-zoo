@@ -125,7 +125,7 @@ final class Gemma4ChatEngine: ObservableObject {
     }
 
     // q1 prefill (head only at the last prompt position) + greedy decode, streamed to `output`.
-    func generate(_ prompt: String, maxNew: Int = 64) async {
+    func generate(_ prompt: String, maxNew: Int? = nil) async {
         guard let be = backend, ready, !busy else { return }
         busy = true; output = ""; stats = ""
         defer { busy = false }
@@ -134,6 +134,9 @@ final class Gemma4ChatEngine: ObservableObject {
             guard ids.count < be.ctx else {
                 output = "prompt (\(ids.count) tok) does not fit ctx \(be.ctx)"; return
             }
+            // Same budget rule as the CoreML-LLM chat app: spend the remaining ctx,
+            // soft-capped to avoid long hangs.
+            let budget = maxNew ?? min(be.ctx - ids.count - 1, 1024)
             be.reset()
             let tPre = Date(); var last = 0
             for (pos, t) in ids.enumerated() {
@@ -149,7 +152,7 @@ final class Gemma4ChatEngine: ObservableObject {
                 output = tokenizer.decode(tokens: gen, skipSpecialTokens: true)
             }
             // Positions 0..ctx-1 are valid cache columns — stop before overrunning the bucket.
-            while gen.count < maxNew, last != eosId, last != EOT, pos < be.ctx {
+            while gen.count < budget, last != eosId, last != EOT, pos < be.ctx {
                 last = try await be.step(Int32(last), pos, needToken: true)
                 pos += 1
                 if last == eosId || last == EOT { break }

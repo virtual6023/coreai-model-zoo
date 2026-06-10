@@ -27,6 +27,10 @@ targets:
     dependencies:
       - package: coreai-models
         product: CoreAIShared
+      # Qwen pipelined mode: Apple's LLM engine stack (EngineFactory / LanguageBundle).
+      # Requires apps/coreai-pipelined-extra-states.patch on the coreai-models clone.
+      - package: coreai-models
+        product: CoreAILM
       - package: swift-transformers
         product: Tokenizers
     settings:

@@ -34,8 +34,10 @@ protocol Gemma4Backend: AnyObject {
 }
 
 enum GemmaMode: String, CaseIterable, Identifiable {
-    case gpu = "GPU", ane = "ANE"
+    case gpu = "GPU", ane = "ANE", qwen = "Qwen"
     var id: String { rawValue }
+    /// Model title shown in the header for this mode.
+    var modelTitle: String { self == .qwen ? "Qwen3.5 0.8B" : "Gemma 4 E2B" }
 }
 
 @MainActor
@@ -49,13 +51,18 @@ final class Gemma4ChatEngine: ObservableObject {
     @Published var stats = ""
 
     private var backend: Gemma4Backend?
+    private var qwenBackend: QwenPipelinedBackend?  // .qwen mode (pipelined engine, own loop)
     private var loadedMode: GemmaMode?  // mode the current backend was loaded for
     private var tokenizer: Tokenizer!
     private let EOT = 106               // gemma <end_of_turn>
     private var eosId = 106
 
     init() {
-        mode = (ProcessInfo.processInfo.environment["GEMMA_ENGINE"] == "ane") ? .ane : .gpu
+        switch ProcessInfo.processInfo.environment["GEMMA_ENGINE"] {
+        case "ane": mode = .ane
+        case "qwen": mode = .qwen
+        default: mode = .gpu
+        }
     }
 
     private func docs() -> URL {
@@ -64,18 +71,28 @@ final class Gemma4ChatEngine: ObservableObject {
 
     // MARK: model delivery
 
-    // Where the published artifact set for this app lives (GEMMA_REPO / the UI field override it).
-    static let defaultRepo = "https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI"
+    // Where the published artifact set for each mode lives (GEMMA_REPO / the UI field override it).
+    static func defaultRepo(for mode: GemmaMode) -> String {
+        mode == .qwen
+            ? "https://huggingface.co/mlboydaisuke/qwen3.5-0.8B-CoreAI"
+            : "https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI"
+    }
 
     // Download targets (repo subpath -> name under Documents/models) the CURRENT mode still
-    // needs. Empty == everything is on disk. The tokenizer ships in the app bundle, and the env
-    // overrides (GEMMA_MONO_MODEL/HEAD, GEMMA_QUANT) are dev paths not covered here.
+    // needs. Empty == everything is on disk. The gemma tokenizer ships in the app bundle (qwen's
+    // is inside its bundle), and the env overrides (GEMMA_MONO_MODEL/HEAD, GEMMA_QUANT) are dev
+    // paths not covered here.
     func missingDownloads() -> [ModelDownloader.Item] {
-        var paths: [(remote: String, local: String)] = [("ios-frontend/gemma4_gather_raw", "gemma4_gather_raw")]
-        if mode == .gpu {
-            paths += [("ios-gpu/gemma4_e2b_metal_int4km_L35.aimodel", "gemma4_e2b_metal_int4km_L35.aimodel"),
-                      ("ios-gpu/gemma4_e2b_head_argmax_int4km.aimodel", "gemma4_e2b_head_argmax_int4km.aimodel")]
-        } else {
+        var paths: [(remote: String, local: String)]
+        switch mode {
+        case .qwen:
+            paths = [(QwenPipelinedBackend.hfRemotePath, QwenPipelinedBackend.bundleName)]
+        case .gpu:
+            paths = [("ios-frontend/gemma4_gather_raw", "gemma4_gather_raw"),
+                     ("ios-gpu/gemma4_e2b_metal_int4km_L35.aimodel", "gemma4_e2b_metal_int4km_L35.aimodel"),
+                     ("ios-gpu/gemma4_e2b_head_argmax_int4km.aimodel", "gemma4_e2b_head_argmax_int4km.aimodel")]
+        case .ane:
+            paths = [("ios-frontend/gemma4_gather_raw", "gemma4_gather_raw")]
             paths += (1...6).map { ("ios-ane/gemma4_e2b_hostcache_chunk\($0)_int8.aimodel",
                                     "gemma4_e2b_hostcache_chunk\($0)_int8.aimodel") }
             paths += [("ios-ane/gemma4_e2b_head_argmax_int8.aimodel", "gemma4_e2b_head_argmax_int8.aimodel")]
@@ -95,26 +112,36 @@ final class Gemma4ChatEngine: ObservableObject {
         if loadedMode == mode, ready { return }
         loading = true; ready = false
         status = "loading \(mode.rawValue) engine…"
-        backend = nil; loadedMode = nil   // free the previous mode's models BEFORE loading the next set
+        // Free the previous mode's models BEFORE loading the next set (jetsam headroom).
+        backend = nil; qwenBackend?.unload(); qwenBackend = nil; loadedMode = nil
         let target = mode
-        let be: Gemma4Backend = (target == .gpu) ? Gemma4MonolithBackend() : Gemma4ChunkBackend()
         do {
             let tLoad = Date()
-            try await be.load()
-            print(String(format: "[chat] %@ engine load %.1fs", target.rawValue, -tLoad.timeIntervalSinceNow))
-            if tokenizer == nil {
-                // Bundled tokenizer first; a sideloaded Documents/tokenizer (devicectl) wins if present.
-                let sideloaded = docs().appendingPathComponent("tokenizer")
-                let folder = FileManager.default.fileExists(atPath: sideloaded.path)
-                    ? sideloaded
-                    : (Bundle.main.url(forResource: "tokenizer", withExtension: nil) ?? sideloaded)
-                tokenizer = try await AutoTokenizer.from(modelFolder: folder, strict: false)
-                eosId = tokenizer.eosTokenId ?? EOT
+            if target == .qwen {
+                let qb = QwenPipelinedBackend()
+                try await qb.load()
+                qwenBackend = qb
+                loadedMode = target
+                ready = true
+                status = "Qwen ⚡pipelined ready · ctx \(qb.ctx)"
+            } else {
+                let be: Gemma4Backend = (target == .gpu) ? Gemma4MonolithBackend() : Gemma4ChunkBackend()
+                try await be.load()
+                if tokenizer == nil {
+                    // Bundled tokenizer first; a sideloaded Documents/tokenizer (devicectl) wins if present.
+                    let sideloaded = docs().appendingPathComponent("tokenizer")
+                    let folder = FileManager.default.fileExists(atPath: sideloaded.path)
+                        ? sideloaded
+                        : (Bundle.main.url(forResource: "tokenizer", withExtension: nil) ?? sideloaded)
+                    tokenizer = try await AutoTokenizer.from(modelFolder: folder, strict: false)
+                    eosId = tokenizer.eosTokenId ?? EOT
+                }
+                backend = be
+                loadedMode = target
+                ready = true
+                status = "\(target.rawValue) ready · ctx \(be.ctx)"
             }
-            backend = be
-            loadedMode = target
-            ready = true
-            status = "\(target.rawValue) ready · ctx \(be.ctx)"
+            print(String(format: "[chat] %@ engine load %.1fs", target.rawValue, -tLoad.timeIntervalSinceNow))
         } catch {
             status = "load error: \(error.localizedDescription)"
             print("[chat] \(target.rawValue) load error: \(error)")
@@ -126,7 +153,12 @@ final class Gemma4ChatEngine: ObservableObject {
 
     // q1 prefill (head only at the last prompt position) + greedy decode, streamed to `output`.
     func generate(_ prompt: String, maxNew: Int? = nil) async {
-        guard let be = backend, ready, !busy else { return }
+        guard ready, !busy else { return }
+        if mode == .qwen {
+            await generateQwen(prompt, maxNew: maxNew)
+            return
+        }
+        guard let be = backend else { return }
         busy = true; output = ""; stats = ""
         defer { busy = false }
         do {
@@ -168,6 +200,22 @@ final class Gemma4ChatEngine: ObservableObject {
                            full, be.profileSummary())
         } catch {
             output = "generation error: \(error)"
+        }
+    }
+
+    // Qwen pipelined path: the engine streams its own loop (async encode + on-GPU
+    // argmax), so generation is a stream consumption, not a host step() loop.
+    private func generateQwen(_ prompt: String, maxNew: Int?) async {
+        guard let qb = qwenBackend else { return }
+        busy = true; output = ""; stats = ""
+        defer { busy = false }
+        do {
+            let st = try await qb.generate(prompt, maxNew: maxNew ?? 1024) { [weak self] text in
+                self?.output = text  // live stream
+            }
+            stats = st.summary
+        } catch {
+            output = "generation error: \(error.localizedDescription)"
         }
     }
 

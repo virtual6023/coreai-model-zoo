@@ -1,0 +1,139 @@
+// QwenPipelinedBackend — Qwen3.5-0.8B on Apple's coreai-pipelined GPU engine.
+//
+// Loads the decode-only loop-free int8lin LanguageBundle (downloaded from HF
+// `gpu-pipelined/qwen3_5_0_8b_decode_int8lin` into Documents/models/) through
+// CoreAILanguageModels' EngineFactory: async non-blocking encode, on-GPU argmax
+// sampling, on-device KV growth. Measured 50.3–51.5 tok/s decode on iPhone 17
+// Pro — vs 42.5–45.4 for the fused-kernel static monolith — with zero custom
+// kernels. Requires the engine extra-states patch on the local coreai-models
+// package (the SSM conv/rec states ride as fixed-shape extra states).
+//
+// Engine contract for this bundle (input_ids is STATIC [1,1]):
+//   * COREAI_CHUNK_THRESHOLD=1 before engine creation — prefill must run as
+//     pipelined S=1 steps (prompt tok/s ≈ decode tok/s).
+//   * never call engine.warmup() — it warms query length 256, which the S=1
+//     graph rejects; a 1-token generate after load is the warmup.
+
+import CoreAILanguageModels
+import CoreAIShared
+import Foundation
+import Tokenizers
+
+@MainActor
+final class QwenPipelinedBackend {
+    static let bundleName = "qwen3_5_0_8b_decode_int8lin"
+    static let hfRemotePath = "gpu-pipelined/qwen3_5_0_8b_decode_int8lin"
+
+    private var engine: (any InferenceEngine)?
+    private var tokenizer: Tokenizer?
+    private(set) var ctx = 4096
+
+    var loaded: Bool { engine != nil }
+
+    struct GenStats {
+        var prefillTok = 0
+        var prefillSec = 0.0
+        var decodeTok = 0
+        var decodeSec = 0.0
+        var summary: String {
+            String(format: "Qwen ⚡pipelined · prefill %d tok %.1f tok/s | decode %d tok %.1f tok/s",
+                   prefillTok, Double(prefillTok) / max(prefillSec, 1e-6),
+                   decodeTok, Double(max(0, decodeTok - 1)) / max(decodeSec, 1e-6))
+        }
+    }
+
+    func load() async throws {
+        // S=1 prefill; set before the engine reads ModelConfig.chunkThreshold.
+        if getenv("COREAI_CHUNK_THRESHOLD") == nil {
+            setenv("COREAI_CHUNK_THRESHOLD", "1", 1)
+        }
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = docs.appendingPathComponent("models").appendingPathComponent(Self.bundleName)
+        let bundle = try LanguageBundle(at: dir)
+        ctx = bundle.maxContextLength
+
+        let config = ModelConfig(
+            name: bundle.name,
+            tokenizer: bundle.tokenizer,
+            vocabSize: bundle.vocabSize,
+            maxContextLength: bundle.maxContextLength,
+            serializedModel: [bundle.modelAssetPath],
+            function: bundle.language.functionMap?.name(for: "main") ?? "main"
+        )
+        let engine = try await EngineFactory.createEngine(
+            config: try JSONEncoder().encode(config),
+            modelURL: try bundle.requireModelURL(for: ModelBundle.ComponentKey.main)
+        )
+        self.engine = engine
+        self.tokenizer = try await bundle.loadTokenizer()
+
+        // queryLength=1 warmup: one throwaway token through the real graph.
+        _ = try await run(ids: [9707], maxTokens: 1, eos: nil, onText: { _ in })
+    }
+
+    func unload() {
+        engine = nil
+        tokenizer = nil
+    }
+
+    // Chat-templated greedy generation, streaming decoded text via onUpdate.
+    func generate(_ prompt: String, maxNew: Int, onUpdate: (String) -> Void) async throws -> GenStats {
+        guard let tokenizer else { throw Self.err("backend not loaded") }
+        let ids = try templatedIds(prompt, tokenizer: tokenizer)
+        guard ids.count < ctx - 1 else { throw Self.err("prompt (\(ids.count) tok) does not fit ctx \(ctx)") }
+        let budget = min(maxNew, ctx - ids.count - 1)
+        return try await run(ids: ids, maxTokens: budget, eos: tokenizer.eosTokenId) { gen in
+            onUpdate(tokenizer.decode(tokens: gen, skipSpecialTokens: true))
+        }
+    }
+
+    private func run(
+        ids: [Int32], maxTokens: Int, eos: Int?, onText: ([Int]) -> Void
+    ) async throws -> GenStats {
+        guard let engine else { throw Self.err("backend not loaded") }
+        try await engine.reset()
+        let stream = try engine.generate(
+            with: ids,
+            samplingConfiguration: SamplingConfiguration(temperature: 0),
+            inferenceOptions: InferenceOptions(maxTokens: maxTokens)
+        )
+        var stats = GenStats(prefillTok: ids.count)
+        var gen: [Int] = []
+        let t0 = SuspendingClock.now
+        var tGen = t0
+        for try await step in stream {
+            if stats.prefillSec == 0 {
+                stats.prefillSec = Self.seconds(since: t0)
+                tGen = SuspendingClock.now
+            }
+            let tok = Int(step.tokenId)
+            stats.decodeTok += 1
+            if let eos, tok == eos { break }
+            gen.append(tok)
+            onText(gen)
+        }
+        stats.decodeSec = Self.seconds(since: tGen)
+        return stats
+    }
+
+    // Qwen chat template via the bundle tokenizer; manual ChatML fallback if the
+    // template file isn't picked up by swift-transformers.
+    private func templatedIds(_ prompt: String, tokenizer: Tokenizer) throws -> [Int32] {
+        if let ids = try? tokenizer.applyChatTemplate(messages: [["role": "user", "content": prompt]]) {
+            return ids.map { Int32($0) }
+        }
+        let text = "<|im_start|>user\n\(prompt)<|im_end|>\n<|im_start|>assistant\n"
+        return tokenizer.encode(text: text).map { Int32($0) }
+    }
+
+    private static func seconds(since start: SuspendingClock.Instant) -> Double {
+        let d = SuspendingClock.now - start
+        let (secs, atto) = d.components
+        return Double(secs) + Double(atto) / 1e18
+    }
+
+    private static func err(_ msg: String) -> Error {
+        NSError(domain: "QwenPipelinedBackend", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: msg])
+    }
+}

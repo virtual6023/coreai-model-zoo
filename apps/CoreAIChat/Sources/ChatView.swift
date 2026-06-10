@@ -13,7 +13,7 @@ struct ChatView: View {
     @State private var input = ""
     @State private var turns: [Turn] = []
     @State private var repoURL = ProcessInfo.processInfo.environment["GEMMA_REPO"]
-        ?? Gemma4ChatEngine.defaultRepo
+        ?? Gemma4ChatEngine.defaultRepo(for: .gpu)
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -36,10 +36,21 @@ struct ChatView: View {
             .safeAreaInset(edge: .top) { topBar }
             .safeAreaInset(edge: .bottom) { inputBar }
         }
-        // Mode switch (GPU monolith <-> ANE chunks): reload the engine for the selected compute unit.
-        .onChange(of: engine.mode) { _, _ in Task { await engine.load() } }
+        // Mode switch (gemma GPU monolith <-> gemma ANE chunks <-> qwen pipelined): point the
+        // download field at that mode's HF repo (unless GEMMA_REPO pins it) and reload.
+        .onChange(of: engine.mode) { _, m in
+            if ProcessInfo.processInfo.environment["GEMMA_REPO"] == nil {
+                repoURL = Gemma4ChatEngine.defaultRepo(for: m)
+            }
+            Task { await engine.load() }
+        }
         // Raise the keyboard on launch (typing is allowed while the model loads; Send stays gated).
-        .onAppear { inputFocused = true }
+        .onAppear {
+            inputFocused = true
+            if ProcessInfo.processInfo.environment["GEMMA_REPO"] == nil {
+                repoURL = Gemma4ChatEngine.defaultRepo(for: engine.mode)
+            }
+        }
     }
 
     private var topBar: some View {
@@ -57,13 +68,13 @@ struct ChatView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Text("CoreAIChat · Gemma 4 E2B").font(.headline)
+            Text("CoreAIChat · \(engine.mode.modelTitle)").font(.headline)
             Spacer()
-            Picker("Compute", selection: $engine.mode) {
+            Picker("Model", selection: $engine.mode) {
                 ForEach(GemmaMode.allCases) { m in Text(m.rawValue).tag(m) }
             }
             .pickerStyle(.segmented)
-            .frame(width: 130)
+            .frame(width: 190)
             .disabled(engine.busy || engine.loading)
             Text(engine.status)
                 .font(.caption).foregroundStyle(engine.ready ? .green : .secondary)
@@ -145,7 +156,12 @@ struct ChatView: View {
                         if downloader.phase == .done { await engine.load() }
                     }
                 } label: {
-                    Label("Download \(engine.mode.rawValue) set (\(engine.mode == .gpu ? "~4.1" : "~2.1–4.7") GB)",
+                    let size = switch engine.mode {
+                    case .gpu: "~4.1"
+                    case .ane: "~2.1–4.7"
+                    case .qwen: "~1.0"
+                    }
+                    Label("Download \(engine.mode.rawValue) set (\(size) GB)",
                           systemImage: "arrow.down.circle")
                 }
                 .buttonStyle(.borderedProminent)

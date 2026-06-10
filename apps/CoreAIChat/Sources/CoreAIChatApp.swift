@@ -1,6 +1,7 @@
 // CoreAIChat — on-device Core AI LLM chat for iPhone (iOS 27).
-// Single app, gemma 4 E2B with a user-selectable GPU / ANE compute mode (Gemma4ChatEngine);
-// qwen3.5 to be folded in later.
+// Single app, one picker, three engines: gemma 4 E2B GPU (kernel monolith) / gemma 4 E2B ANE
+// (host-cache chunks) / Qwen3.5-0.8B ⚡pipelined (decode-only loop-free int8lin on Apple's
+// coreai-pipelined engine — 50.3-51.5 tok/s on iPhone 17 Pro, chat-surface ~48).
 
 import SwiftUI
 

@@ -30,7 +30,7 @@ Next up: Qwen3.5-2B (converts on the same path) · Gemma 4 E4B · Qwen3-VL.
 | [`knowledge/`](knowledge/) | Verified notes on the framework: conversion, compression, stateful KV, custom Metal kernels, AOT, compute-unit rules, the Swift runtime. |
 | [`conversion/`](conversion/) | Re-authored models + convert / verify / compress scripts (PyTorch → `.aimodel`). |
 | [`swift/`](swift/) | `CoreAIRunner` — a Swift package that drives `.aimodel` LLM bundles, including architectures beyond the standard runtime. |
-| [`apps/CoreAIChat/`](apps/CoreAIChat/) | SwiftUI on-device chat app (iOS 27). |
+| [`apps/`](apps/) | SwiftUI on-device chat apps (iOS 27): CoreAIChat (Gemma 4 E2B, GPU/ANE picker) + QwenChatFast (Qwen3.5) with in-app model download. |
 
 ## Start here
 

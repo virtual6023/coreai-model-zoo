@@ -1,0 +1,43 @@
+name: QwenChatFast
+options:
+  bundleIdPrefix: com.coreai
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "27.0"
+
+packages:
+  coreai-models:
+    path: ../../coreai-models
+  swift-transformers:
+    url: https://github.com/huggingface/swift-transformers.git
+    from: "1.3.3"
+
+targets:
+  QwenChatFast:
+    type: application
+    platform: iOS
+    deploymentTarget: "27.0"
+    sources:
+      - path: Sources
+      - path: ../AppShared/ModelDownloader.swift
+      - path: Resources/tokenizer
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: coreai-models
+        product: CoreAIShared
+      - package: swift-transformers
+        product: Tokenizers
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.coreai.qwenchat.fast
+        # DEVELOPMENT_TEAM: <your-team-id>   (or pick a team in Xcode's Signing pane)
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "6.0"
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        INFOPLIST_KEY_CFBundleDisplayName: QwenChatFast
+        SWIFT_APPROACHABLE_CONCURRENCY: "YES"

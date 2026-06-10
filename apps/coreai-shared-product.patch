@@ -1,0 +1,19 @@
+diff --git a/Package.swift b/Package.swift
+index 8cdb6d4..05861b8 100644
+--- a/Package.swift
++++ b/Package.swift
+@@ -35,6 +35,14 @@ let package = Package(
+                 "CoreAIObjectDetector"
+             ]
+         ),
++        // Low-level runtime (PreparedModel, NDArray helpers) — used by our custom
++        // on-device N-state runner in ondevice/CoreAIRunner.
++        .library(
++            name: "CoreAIShared",
++            targets: [
++                "CoreAIShared"
++            ]
++        ),
+     ],
+     dependencies: [
+         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.2.0"),

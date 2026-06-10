@@ -20,3 +20,8 @@ __pycache__/
 *.pyc
 # macOS
 .DS_Store
+# Apps: Xcode projects are generated (xcodegen); tokenizer.json is large — fetch from the
+# upstream model repos (see apps/CoreAIChat/README.md)
+apps/**/*.xcodeproj/
+apps/**/build/
+apps/**/tokenizer.json

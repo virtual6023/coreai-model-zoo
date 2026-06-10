@@ -95,7 +95,16 @@ possible:
 - **Benchmark Release builds only** — a Debug engine measures ~3× slow (host-side per-token
   work dominates unoptimized Swift).
 - Cold GPU specialization of the 0.8B bundle: ~4.8 s on iPhone, then ~0.2–1.0 s warm loads
-  (content-keyed cache) — no AOT needed on this path.
+  (content-keyed cache) — no AOT needed on this path. The 2.3 GB 2B bundle: 29.1 s cold,
+  3.0 s warm.
+- **2B-class bundles (≥~2 GB) need the `com.apple.developer.kernel.increased-memory-limit`
+  entitlement on iPhone** — cold specialization dies with `std::bad_alloc` (SIGABRT) at the
+  default jetsam limit. With the entitlement the same spec completes.
+- **Failed cold specializations leave partial e-caches** in the app container that eat device
+  disk (~3.5 GB for the 2B) and make every later attempt fail as `NSPOSIXErrorDomain code=2`
+  ("No such file or directory") at engine create — an out-of-disk ENOENT chain, not a payload
+  problem. Recovery: uninstall the app (clears the container), reinstall, retry with ≥~4 GB
+  free. Diagnose by logging `attributesOfFileSystem` free space from the app.
 
 ## State & precision traps on the GPU delegate (found by the LFM2.5 port)
 
@@ -207,9 +216,11 @@ vs the best previous iPhone config (fused int8 Metal-kernel static monolith): 42
   faster (overhead-bound at 0.7 GB); neither LFM2.5 delegate workaround needed — per-layer
   `SSMState` writes compile fine and NoPE attention shows no fp16 amplification, see
   [`../zoo/granite-4.0-h.md`](../zoo/granite-4.0-h.md)), GDN hybrids (qwen3.5 family incl. 2B —
-  **verified 2026-06-11**: same script via `--hf-id Qwen/Qwen3.5-2B`, zero new work, int8lin
-  **127 tok/s** / fp16 90.9 on M4 Max, oracle gate 16/16 both; Mac ship — the iPhone naive
-  ceiling ~26 ≈ CoreML-2B parity).
+  **verified 2026-06-11, Mac AND iPhone**: same script via `--hf-id Qwen/Qwen3.5-2B`, zero new
+  work, int8lin **127 tok/s** / fp16 90.9 on M4 Max, oracle gate 16/16 both; iPhone measured
+  **19.1–21.3 tok/s** with 24/24 ≡ Mac-GPU numerics — runs fine but needs the
+  increased-memory entitlement and the CoreML-2B port (~27) is still faster on phone →
+  **Mac-recommended**).
 - **Fits with the per-token-inputs patch**: per-token host-gathered inputs — **verified
   2026-06-11 on Gemma-4-E2B, Mac AND iPhone**: PLE rows ride as a `ple_tokens [1,1,35,256]`
   input filled by an mmap provider; unified single KV pair (15 non-shared slots padded to

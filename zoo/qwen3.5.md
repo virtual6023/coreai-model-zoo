@@ -137,10 +137,18 @@ release `llm-benchmark`, `COREAI_CHUNK_THRESHOLD=1`):
 | **int8 linear per-block-32 (ship)** | **2.3 GB** | 127.0 | **127.2** | 16/16 single-step top-1 vs the fp32 HF oracle + HF-cache-seeded decode step (cos 0.99999) |
 | fp16 | 3.5 GB | 91.2 | 90.9 | 16/16 + decode step (cos 0.999999) |
 
-This is a **Mac ship**: on iPhone the naive bandwidth ceiling (~60 GB/s ÷ 2.3 GB of
-weights) is ~26 tok/s — parity with the existing CoreML 2B port (~27) for a much
-tighter RAM budget (2.3 GB weights + KV), so the pipelined 2B adds nothing on device.
-Prefill is pipelined S=1 (≈ decode tok/s), same caveat as the 0.8B.
+**Mac-recommended; runs on iPhone too** (device-measured, iPhone 17 Pro
+2026-06-11): decode **19.1–21.3 tok/s** (prefill ≈ same, S=1) with perfect
+numerics (nat + oracle 24/24, token-identical to the Mac-GPU engine) — the same
+bundle serves both platforms. On the phone it needs the
+`com.apple.developer.kernel.increased-memory-limit` entitlement (cold GPU
+specialization `std::bad_alloc` without it) plus ~3.5 GB of free disk for the
+specialization cache (cold spec 29.1 s, warm load 3.0 s), and the CoreML 2B
+port (~27 tok/s) is still the faster phone option — decode is fully
+bandwidth-bound and the fp16 tied lm_head alone is ~1.0 GB of the ~2.4 GB read
+per token. Trap for big bundles: failed cold specializations leave partial
+caches that eat disk and turn later attempts into `NSPOSIXErrorDomain code=2`
+at engine create — uninstall the app to reclaim.
 
 ## Conversion status (macOS, vs HF eager)
 

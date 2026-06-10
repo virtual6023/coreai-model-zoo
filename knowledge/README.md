@@ -14,9 +14,15 @@ Hard-won, verified notes on Apple's Core AI (iOS/macOS 27) — what the docs don
   (Mac GPU near its ceiling, MLX gap structural, fusion closed), what AOT does/doesn't do, and why ANE is an
   energy play not a speed one. Read before chasing a "dramatic speed" win.
 
-## GPU-now track (speed via custom kernels)
+## GPU-now track (speed)
+- [`pipelined-engine.md`](pipelined-engine.md) — **read this first for decode speed**: riding Apple's
+  `coreai-pipelined` engine = 3.5× over a hand-rolled per-token loop with ZERO custom kernels
+  (qwen3.5: Mac 204 tok/s, iPhone 50.3–51.5). The decode-only loop-free export, the extra-states
+  engine patch, the chunk=1 / warmup-256 traps, LUT-vs-linear int8, oracle gating, and what
+  fits/doesn't (Gemma 4's PLE doesn't — yet).
 - [`custom-metal-kernels.md`](custom-metal-kernels.md) — `TorchMetalKernel` (WWDC 325): the API, the
   register-then-add order, MSL embedded in the `.aimodel`, GPU-only, what to (and not to) kernelize.
+  Still the tool when a model CAN'T ride the pipelined engine (e.g. Gemma 4).
 
 ## ANE-later track (when the beta KV-write bug lifts + int4 head + AOT)
 - [`aot-and-specialization.md`](aot-and-specialization.md) — specialization, `AIModelCache` /

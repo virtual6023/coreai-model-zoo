@@ -1,5 +1,13 @@
 # Core AI performance ceiling — what's actually tapped (honest)
 
+> ⚠️ **2026-06-11 CORRECTION — read [`pipelined-engine.md`](pipelined-engine.md) first.** This
+> page's ceiling (and the "MLX gap is structural" verdict below) was measured on a hand-rolled
+> per-token `fn.run()` loop. That was the LOOP's ceiling, not Core AI's: Apple's
+> `coreai-pipelined` engine runs the same weights ~3.5× faster (qwen3.5 58.5 → 204 tok/s on
+> M4 Max; ~2× MLX) with zero custom kernels. The per-kernel findings below (what to kernelize,
+> AOT, int8 floor, ANE-as-energy) still hold — they just apply to the hand-rolled path, which
+> is now only the right path when a model can't ride the engine (e.g. Gemma 4's PLE).
+>
 > Foundation note so future work doesn't chase wins that aren't there. The point: **within Core AI, on the
 > Mac GPU, on-device LLM decode is near its ceiling** — and the remaining levers are enablement/energy, not
 > dramatic throughput. Evidence: this project's gemma4 E2B macOS measurements (memory

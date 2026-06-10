@@ -15,13 +15,13 @@ throughput.
 <!-- Mac column RELEASE-VERIFIED 2026-06-10 (R2, ondevice/MACOS_RELEASE_README.md).
      qwen static iOS GPU 27.7 (ctx 2048, release config) = 2026-06-10 RELEASE-build device
      measurement (ctx-256 export measured 30.4).
-     gemma4 iOS GPU 17.7 = 2026-06-10 int4km-kernel monolith (RELEASE_PLAN row #3); confirm
-     build config + re-measure ANE in RELEASE before publish (debug-vs-release lesson:
-     10.3 vs 30.4 / ~19 vs 58.5). -->
+     gemma4 iOS GPU 22 + ANE 6 = 2026-06-10 hands-on re-measure in the RELEASE chat app
+     (int4km monolith; instrumented run 22.5, core 39ms / head 2ms — the earlier 17.7 was the
+     AOT-harness number; the Release-confirm TODO is resolved). -->
 
 | | macOS GPU (M4 Max) | iOS GPU | iOS ANE |
 |---|---|---|---|
-| **Gemma 4 E2B** | ✅ 8/8 · 56.6–59.0 tok/s (int8 kernels) | ✅ 8/8 · **17.7 tok/s** (int4-k-means kernels) | ✅ 8/8 · ~6 tok/s (int8 chunks) |
+| **Gemma 4 E2B** | ✅ 8/8 · 56.6–59.0 tok/s (int8 kernels) | ✅ 8/8 · **22 tok/s** (int4-k-means kernels) | ✅ 8/8 · 6 tok/s (int8 chunks) |
 | **Qwen3.5 0.8B** | ✅ 8/8 · 58.5 (int8 dynamic) | ✅ **27.7** (fp16 static, ctx 2048) / 12.5 (int8 dynamic) | ✅ 14.7 (int8 dynamic); static ✗ this beta (fp16 SSM recurrence) |
 
 macOS ANE is intentionally out of scope (the runtime auto-prefers GPU on Mac for these

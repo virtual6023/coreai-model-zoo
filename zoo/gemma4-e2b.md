@@ -5,7 +5,7 @@ Gemma 4 E2B multimodal model; this card is the **text decoder** (`model_type` `g
 
 **⬇️ Converted `.aimodel` bundles (ready to run):
 [mlboydaisuke/gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI)** —
-one best verified set per category: `ios-gpu/` (int4-kmeans kernels, 17.7 tok/s), `ios-ane/`
+one best verified set per category: `ios-gpu/` (int4-kmeans kernels, 22 tok/s), `ios-ane/`
 (6 chunks, fp16-hardened, 8/8), `macos/` (int8 kernels, 56.6–59 tok/s) + shared `ios-frontend/`.
 
 Signature features (all handled in the re-authored model): 35 layers, dual head_dim (sliding 256 /
@@ -17,14 +17,14 @@ proportional), final logit softcap `tanh(z/30)·30`. RMSNorm multiplies by `weig
 ## On-device status (iOS/macOS 27 beta — measured, greedy, 8/8 top-1 vs HF)
 
 <!-- Mac numbers RELEASE-VERIFIED by R2 2026-06-10 (ondevice/MACOS_RELEASE_README.md);
-     iOS GPU 17.7 = R1 int4km kernel path 2026-06-10 (RELEASE_PLAN row #3); before publish:
-     confirm build config (Release) + re-measure ANE (the ~6 is a suspected Debug-underestimate
-     per the qwen-static session lesson). -->
+     iOS numbers re-measured 2026-06-10 hands-on in the RELEASE chat app: GPU 22 tok/s
+     (int4km monolith; instrumented 22.5, core 39ms / head 2ms — the earlier 17.7 was the
+     AOT-harness number) + ANE 6 tok/s. The Release-confirm TODO is resolved. -->
 
 | | macOS GPU (M4 Max) | iOS GPU (iPhone 17 Pro) | iOS ANE (iPhone 17 Pro) |
 |---|---|---|---|
 | Correctness | ✅ 8/8 exact | ✅ 8/8 exact | ✅ 8/8 exact |
-| Decode | **56.6–59.0 tok/s** (Swift e2e; core ~70 tok/s) | **17.7 tok/s** | **~6 tok/s** |
+| Decode | **56.6–59.0 tok/s** (Swift e2e; core ~70 tok/s) | **22 tok/s** | **6 tok/s** |
 | Path | host-cache fixed-shape + custom Metal kernels (fused-**int8** FFN + head+argmax) | same kernel family at **int4 k-means** (1.3 GB core), monolith + host KV | 6-chunk host-cache, fp32-safe ANE authoring, on-ANE argmax head |
 
 - "What is the capital of France?" → "The capital of France is **Paris**." on every cell.
@@ -46,8 +46,8 @@ proportional), final logit softcap `tanh(z/30)·30`. RMSNorm multiplies by `weig
    262144-vocab head (+ two-level in-kernel argmax, no logit readback). MSL embedded in the
    `.aimodel` (WWDC 325), still 100% Core AI — and it **survives AOT** (`coreai-build` →
    `.aimodelc`, device output bit-identical). Mac decode 13 → 27 → ~57 tok/s. On the iPhone the
-   same kernels at **int4 k-means** buy another 1.43× (device is bandwidth-bound where the Mac
-   is ALU-bound) → 17.7 tok/s.
+   same kernels at **int4 k-means** buy another ~1.5× (device is bandwidth-bound where the Mac
+   is ALU-bound) → 22 tok/s.
 3. **ANE fp16 exactness** — two root causes, both fixed default-on (GPU-equiv ~2e-8):
    composite RMSNorm overflows fp16 `mean(x²)` on gemma4's large activations → `[x,-x]`
    LayerNorm trick; `nn.Linear` accumulates fp16 → Conv2d 1×1 (fp32 MAC on the conv engine).

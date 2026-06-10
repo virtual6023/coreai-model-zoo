@@ -125,6 +125,23 @@ fp16×pipelined was correctly predicted to lose (~44 ceiling) and was not run.
 Export: [`../conversion/export_qwen3_5_decode_pipelined.py`](../conversion/export_qwen3_5_decode_pipelined.py)
 (`int8lin` default; `fp16` / `int8` k-means / `int8hu` untied-head for comparison).
 
+### Qwen3.5-2B on the same fast path: 127 tok/s on M4 Max
+
+The 2B is architecturally identical (24 layers = 18 linear + 6 full attention, hidden
+2048), so the decode-only loop-free export and the extra-states patch carry over with
+zero new work — same script, `--hf-id Qwen/Qwen3.5-2B`. Measured (M4 Max, p=128 g=256,
+release `llm-benchmark`, `COREAI_CHUNK_THRESHOLD=1`):
+
+| config | bundle | prefill tok/s | decode tok/s | numerics |
+|---|---:|---:|---:|---|
+| **int8 linear per-block-32 (ship)** | **2.3 GB** | 127.0 | **127.2** | 16/16 single-step top-1 vs the fp32 HF oracle + HF-cache-seeded decode step (cos 0.99999) |
+| fp16 | 3.5 GB | 91.2 | 90.9 | 16/16 + decode step (cos 0.999999) |
+
+This is a **Mac ship**: on iPhone the naive bandwidth ceiling (~60 GB/s ÷ 2.3 GB of
+weights) is ~26 tok/s — parity with the existing CoreML 2B port (~27) for a much
+tighter RAM budget (2.3 GB weights + KV), so the pipelined 2B adds nothing on device.
+Prefill is pipelined S=1 (≈ decode tok/s), same caveat as the 0.8B.
+
 ## Conversion status (macOS, vs HF eager)
 
 - Prefill + stateful decode: **cosine 1.0 / top-1 100%** (fp32).

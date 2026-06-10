@@ -10,17 +10,22 @@ on-device, with the conversion code and a knowledge base. Successor to
 |---|---|---|
 | **Qwen3.5-0.8B** | [🤗 qwen3.5-0.8B-CoreAI](https://huggingface.co/mlboydaisuke/qwen3.5-0.8B-CoreAI) | Apache-2.0 |
 | **Gemma 4 E2B** (text) | [🤗 gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI) | Gemma |
+| **LFM2.5-1.2B-Instruct** | [🤗 LFM2.5-1.2B-CoreAI](https://huggingface.co/mlboydaisuke/LFM2.5-1.2B-CoreAI) | LFM Open License v1.0 |
+| **Granite 4.0-H 1B / 350M** | HF upload pending — convert locally via [`conversion/`](conversion/) | Apache-2.0 |
 
 ### Decode throughput (greedy; output top-1 exact vs the Hugging Face reference)
 
 | | iPhone 17 Pro · GPU | iPhone 17 Pro · ANE | M4 Max · GPU |
 |---|---|---|---|
 | **Qwen3.5-0.8B** | **50.3–51.5 tok/s**<br><sub>int8 linear · loop-free × pipelined engine (shipped app: int8 fused kernels 42.5–45.4 · prefill 147 tok/s q16 chunks)</sub> | **14.7 tok/s**<br><sub>int8 · dynamic</sub> | **204 tok/s**<br><sub>int8 linear · loop-free × pipelined engine (custom-kernel CLI: 58.5)</sub> |
+| **Qwen3.5-2B** | —<br><sub>Mac ship: naive ceiling ~26 tok/s ≈ CoreML-2B parity at a tighter RAM budget</sub> | — | **127 tok/s**<br><sub>int8 linear · loop-free × pipelined engine</sub> |
+| **LFM2.5-1.2B** | **38.0–39.6 tok/s**<br><sub>int8 linear · pipelined engine (~87% of naive BW ceiling; 24/24 ≡ Mac-GPU)</sub> | — | **253 tok/s**<br><sub>int8 linear · pipelined engine — first non-Qwen rider (fp16: 162)</sub> |
+| **Granite 4.0-H 1B** | —<br><sub>not yet measured (naive ceiling ~37 tok/s)</sub> | — | **136.5 tok/s**<br><sub>int8 linear · pipelined engine — first Mamba2 SSM rider (fp16: 103.6; 350m fp16: 191)</sub> |
 | **Gemma 4 E2B** | **22 tok/s**<br><sub>int4 k-means kernels</sub> | **6 tok/s**<br><sub>int8 · 6 chunks</sub> | **56.6–59.0 tok/s**<br><sub>int8 kernels</sub> |
 
 Measured on the iOS 27 / macOS 27 beta. Sizes, configurations, and caveats: [`zoo/`](zoo/).
 
-Next up: Qwen3.5-2B (converts on the same path) · Gemma 4 E4B · Qwen3-VL.
+Next up: Gemma 4 E4B · Qwen3-VL.
 
 ## Repository layout
 

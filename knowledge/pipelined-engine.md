@@ -53,11 +53,17 @@ AI's. The official engine is ~2× **faster** than MLX on the same machine (qwen3
 - **A full LanguageBundle directory** — `metadata.json` (kind `llm`, `assets.main`,
   `language.{tokenizer,vocab_size,max_context_length,function_map}`) + `tokenizer/` +
   the `.aimodel`. A bare `.aimodel` dir is not loadable by `LanguageBundle`/`EngineFactory`.
-- **No giant per-token host tables.** This is what excludes Gemma 4 (3n-style): its 9.4 GB
-  per-layer-embedding table is gathered by token id on the host every step, and the engine has
-  no per-token host-input hook. (Feasible engine mod, untested: the sampled token is known in
-  the sampler completion handler before the next encode — a "per-token extra inputs" provider
-  could mmap-gather the PLE rows there. The gather itself is sub-ms.)
+- **Giant per-token host tables need the per-token-inputs patch**
+  ([`../apps/coreai-pipelined-per-token-inputs.patch`](../apps/coreai-pipelined-per-token-inputs.patch)).
+  Gemma 4 (3n-style) gathers a 9.4 GB per-layer-embedding table by token id on the host every
+  step; stock, the engine has no hook for that. With the patch, inputs beyond
+  `input_ids`/`position_ids` (fixed-shape, S=1 — e.g. `ple_tokens [1,1,L,ld]`) are filled each
+  step by an `EngineOptions.perTokenInputProvider` callback (sub-ms mmap gather). Prefill stays
+  fully pipelined (slot-per-position buffer; prompt tokens are known up front); decode waits
+  for each GPU-sampled token before encoding the next step — that round trip measured
+  ~2.4 ms/token on M4 Max and ~13 ms/token on iPhone 17 Pro for Gemma-4-E2B (the
+  on-GPU-argmax + on-device-KV wins survive; the gather itself is ~0.1 ms). Default-off:
+  two-input models run the engine bit-identically to before (qwen 204 tok/s regression intact).
 
 ## The export trick: decode-only, loop-free
 
@@ -91,6 +97,32 @@ possible:
 - Cold GPU specialization of the 0.8B bundle: ~4.8 s on iPhone, then ~0.2–1.0 s warm loads
   (content-keyed cache) — no AOT needed on this path.
 
+## State & precision traps on the GPU delegate (found by the LFM2.5 port)
+
+Two macOS-27-beta GPU-delegate behaviors that produce *silently wrong* decode (the bundle
+loads and runs; only numerics gating catches them). Both bit LFM2.5-1.2B and neither bit
+qwen3.5 — pattern- and model-dependent, so treat them as authoring rules:
+
+1. **Don't chain per-slot writes on one fixed-shape state.** N per-layer
+   `SSMState.update_states` calls compile to N read_handle → slice_update → write_handle
+   round trips on the same state handle; with N > 1 the GPU delegate dropped them ALL (state
+   buffer stays zero — the compiled IR is correct and token-chained; 1 slot works, a 3-slot
+   repro fails; qwen's 18-slot conv/rec pattern happens to survive). Symptom: position 0 is
+   fine (fresh state IS zero), everything after decodes garbage. **Rule: collect each
+   layer's new state slice and issue ONE fused full-state `slice_update` per step** (reads
+   stay per-layer narrows of the input state; slots are disjoint, so semantics are
+   identical). The KV growing pair is unaffected (its written values are re-read in-graph).
+2. **fp16 matmuls in the attention prologue lose ~1.3% relative accuracy under a
+   dynamic-shape graph** (the same projection in an all-static graph measures 0.07% — the
+   delegate appears to pick an fp16-accumulation kernel when dynamic dims are present).
+   Whether that matters is model-dependent: LFM2.5's large q/k-norm gains (|k| up to ~14)
+   amplify it and the error compounds across the stack into garbage logits (full-stack cos
+   0.71 vs eager); qwen3.5's modest activations shrug it off. **Rule: if the oracle gate
+   fails with healthy per-position cosines that decay through the stack, keep the four
+   attention projections (q/k/v/out) in fp32** — weights fp32, cast in/out around the
+   matmul; layer-level error drops to ~1e-5 at +2 bytes/param for those four (LFM2.5-1.2B:
+   +126 MB). Conv-mixer and MLP matmuls measured clean in fp16.
+
 ## Quantization on the GPU delegate (measured, qwen3.5-0.8B, M4 Max p128/g256)
 
 | config | size | decode tok/s | verdict |
@@ -101,11 +133,25 @@ possible:
 | + untied int8 lm_head | 1.3 GB | 201.4 | **no win** — the head matvec isn't the critical path; naive bandwidth models can lie |
 | int4 k-means g8 (+int8 rescue variants) | 0.75–0.88 GB | — | **fails the oracle gate** (12–16, 14/16, 12/16); per_tensor int8 rescue is *coarser* than int4-g8 LUT for SSM in_projs |
 
-Rules of thumb: 256-entry int8 LUTs are slow on this delegate, 16-entry int4 LUTs are fast
-(Apple's official qwen3-0.6B int4-km-g8 does 1000+); **per-block linear int8** (scale-multiply
-dequant) is what unlocks int8 speed. The eager quantizer **silently skips tied weights** —
-clone the embedding table first if you actually want the head quantized (and measure before
-believing it helps).
+The gemma4-E2B sweep (all oracle-8/8, engine path with the PLE provider, M4 Max p128/g256)
+settles the LUT question — same bytes, 2.25× apart:
+
+| config | bundle | prefill | decode | verdict |
+|---|---:|---:|---:|---|
+| int4 k-means g32 (16-entry LUT) | 1.9 GB | 41.0 | 31.5 | LUT dequant dominates |
+| int8 linear per-block-32 | 3.1 GB | 71.9 | 57.2 | BW-bound (~165 GB/s effective) |
+| **int4 linear per-block-32** | 2.0 GB | **85.3** | **70.9** | ship class; +20–25% over the zoo's kernel CLI |
+
+Rules of thumb: **eager-palettized k-means LUT dequant is the slow class on this delegate at
+ANY entry count** — 256-entry int8 (qwen 113) and 16-entry int4 (gemma 31.5) both lose to
+per-block LINEAR (scale-multiply) dequant at the same or even 2× the bytes. (Apple's official
+int4-km-g8 models are fast, but that path isn't reproducible via `palettize_pytorch_model`.)
+`quantize_pytorch_model` takes `dtype: "int4"` with per-block granularity — **linear int4
+per-block-32 was top-1 EXACT on gemma4** (8/8; qwen3.5 is int4-NO-GO at any scheme tried —
+model-dependent, gate it). The eager quantizer **silently skips tied weights** — clone the
+embedding table first if you actually want the head quantized (and measure before believing
+it helps: untied int8 head was a no-win on qwen, but on gemma4's 262K vocab the head is 35%
+of per-token reads and quantizing it matters).
 
 ## Numerics gating (how to judge a quantized bundle)
 
@@ -121,6 +167,12 @@ believing it helps).
   --warmup exact --warmup-length 1` invocation to confirm.
 - Cross-device determinism held in our runs: iPhone GPU sequences were 24/24 token-identical
   to M4 Max GPU on both fixed prompts.
+- **Validate the oracle prompt itself**: every oracle position must have a healthy fp32
+  top-2 logit margin (we require **≥ 0.1**, computable from the oracle alone before any
+  bundle exists). LFM2.5's first prompt had two ~0.012-margin near-ties — statistical
+  coin-flips that healthy int8 noise (cos 0.9998) flips and that fp16 passes only by luck;
+  a 14/16 there gates nothing. Pick a prompt that clears the margin floor (ours: ≥ 0.40)
+  and keep the 16/16 criterion strict.
 
 ## Measured end state (Qwen3.5-0.8B int8lin, 2026-06-11)
 
@@ -138,16 +190,49 @@ vs the best previous iPhone config (fused int8 Metal-kernel static monolith): 42
 - **Fits with zero engine work**: pure transformers ≤~4B (KV-only states) — stock engine, no
   patch; the work is the `coreai_models`-style re-author + export.
 - **Fits with the existing patch**: hybrids with ≤2 fixed-shape extra states — conv+attention
-  (LFM2-class), Mamba2+attention (Granite-4.0-H / Falcon-H1-class: conv + ssm state = exactly
-  2), GDN hybrids (qwen3.5 family incl. 2B — same scripts, `--hf-id`).
-- **Needs an engine mod**: per-token host-gathered inputs (Gemma 4's PLE). Design sketch above.
+  (LFM2-class — **verified 2026-06-11 on LFM2.5-1.2B-Instruct, Mac AND iPhone**, the first
+  non-Qwen rider: no scan anywhere so the decode graph is loop-free by construction, ONE
+  extra conv state `[10,1,2048,2]`; int8lin **253 tok/s** / fp16 162 on M4 Max +
+  **38.0–39.6 tok/s on iPhone 17 Pro** (~87% of the naive BW ceiling — BW-saturated, a
+  higher fraction than qwen-0.8B's ~60%; cold specialization 6.8 s / warm 1.6 s, no AOT),
+  oracle gate 16/16 both, engine path ≡ python 24/24, iPhone ≡ Mac-GPU 24/24 on both fixed
+  prompts — needed the two GPU-delegate workarounds above, see
+  [`../zoo/lfm2.5.md`](../zoo/lfm2.5.md)), Mamba2+attention (Granite-4.0-H /
+  Falcon-H1-class: conv + ssm state = exactly 2 — **verified 2026-06-11 on
+  Granite-4.0-h-1b + 350m, the first SSM-scan rider**: at S=1 the Mamba2 selective scan
+  is a single recurrence step (the HF `use_precomputed_states` branch), loop-free like the
+  GDN step; 1b int8lin **136.5 tok/s** / fp16 103.6 on M4 Max, oracle gate 16/16 both on a
+  margin-clean oracle; 350m ships fp16 at 191 — int8 there FAILS the gate (real per-block-32
+  MLP damage + a 0.0102-margin tie decode step, see the margin rule below) *and* is no
+  faster (overhead-bound at 0.7 GB); neither LFM2.5 delegate workaround needed — per-layer
+  `SSMState` writes compile fine and NoPE attention shows no fp16 amplification, see
+  [`../zoo/granite-4.0-h.md`](../zoo/granite-4.0-h.md)), GDN hybrids (qwen3.5 family incl. 2B —
+  **verified 2026-06-11**: same script via `--hf-id Qwen/Qwen3.5-2B`, zero new work, int8lin
+  **127 tok/s** / fp16 90.9 on M4 Max, oracle gate 16/16 both; Mac ship — the iPhone naive
+  ceiling ~26 ≈ CoreML-2B parity).
+- **Fits with the per-token-inputs patch**: per-token host-gathered inputs — **verified
+  2026-06-11 on Gemma-4-E2B, Mac AND iPhone**: PLE rows ride as a `ple_tokens [1,1,35,256]`
+  input filled by an mmap provider; unified single KV pair (15 non-shared slots padded to
+  head_dim 512, sliding layers as linear KV + SDPA window mask); embed + softcapped head
+  in-graph; int4-linear bundle = oracle 8/8 and **70.9 tok/s decode / 85.3 prefill on M4
+  Max** vs the zoo's int4km-kernel CLI at 56.6–59 (+20–25%, zero custom kernels). iPhone 17
+  Pro (AOT `.aimodelc` — the 2.0 GB-constants graph crashes the ON-DEVICE specializer with
+  `LLVM ERROR: Failed to allocate mmap'd buffer`, so compile with `coreai-build … --platform
+  iOS --architecture h18p --expect-frequent-reshapes` and point `assets.main` at the
+  `.aimodelc`): numerics 24/24 ≡ Mac-GPU, **decode 26.5 avg (25.8–27.6) = +10–20% over the
+  22–24 tok/s kernel monolith, prefill 40.5 = +71%**, warm engine load 2.6 s (measure on an
+  idle device — install-adjacent runs under-read ~15%). Device decode is BW-bound at the
+  prefill floor (1.15 GB ÷ ~47 GB/s effective ≈ 25 ms) + ~13 ms/tok sampler round-trip in
+  per-token mode (the PLE gather itself is ~0.1 ms — the serialization fear was mis-aimed);
+  next levers are fusing the sampler into the model command buffer or a smaller head.
 - **Doesn't fit**: pure-RNN models (no growing KV — the engine's state model assumes one),
   models whose embed+head can't live in-graph, big MoE (different problem).
 
 Apple's `coreai-models` repo is **issues-only** (no PRs), so engine capabilities ship from this
 repo as a **patch stack** in [`../apps/`](../apps/), applied in order on a fresh upstream clone
-(`git -C coreai-models apply <p1> <p2> …` — see [`../apps/README.md`](../apps/README.md)):
-`coreai-shared-product.patch` → `coreai-pipelined-extra-states.patch` → (future capability
-patches, one file each, each applying cleanly after the previous and building with
-`swift build -c release`). If Apple opens the engine, the two capabilities worth upstreaming
-are: N extra fixed-shape states, and a per-token host-input hook (the Gemma-4/PLE enabler).
+(`git -C coreai-models apply <p1> <p2> <p3>` — see [`../apps/README.md`](../apps/README.md)):
+`coreai-shared-product.patch` → `coreai-pipelined-extra-states.patch` →
+`coreai-pipelined-per-token-inputs.patch` (each applies cleanly after the previous and the
+full stack builds with `swift build -c release`). If Apple opens the engine, the two
+capabilities worth upstreaming are: N extra fixed-shape states, and the per-token host-input
+hook (the Gemma-4/PLE enabler — `EngineOptions.perTokenInputProvider`).

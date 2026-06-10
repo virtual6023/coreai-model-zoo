@@ -26,8 +26,32 @@ overlay** of that package. Concretely, the additions are:
 - On-device export (kept artifacts): `export_qwen3_5.py [0.8b|2b]`, `export_gemma4_frontend.py`.
 - **Qwen3.5 pipelined fast path (in this dir): `export_qwen3_5_decode_pipelined.py [int8lin]`** —
   decode-only loop-free bundle for Apple's `coreai-pipelined` GPU engine, 204 tok/s on M4 Max
-  (3.5× the custom-kernel CLI). Needs the Swift engine patch
+  (3.5× the custom-kernel CLI). `--hf-id Qwen/Qwen3.5-2B` exports the 2B on the same path
+  (127 tok/s int8lin, Mac ship). Needs the Swift engine patch
   `../apps/coreai-pipelined-extra-states.patch` and `COREAI_CHUNK_THRESHOLD=1` at run time.
+- **LFM2.5 pipelined (in this dir): `export_lfm2_decode_pipelined.py [fp16|int8lin]`** — the
+  first non-Qwen rider: LiquidAI's conv+attention hybrid, decode-only S=1 (loop-free by
+  construction — no scan anywhere), **253 tok/s int8lin / 162 fp16 on M4 Max**, oracle gate
+  16/16. Model overlay: `models/macos/lfm2.py` on the `coreai-models` checkout — it bakes in
+  two macOS-27-beta GPU-delegate workarounds (fused single conv-state write; fp32 attention
+  projections). Same engine patch + `COREAI_CHUNK_THRESHOLD=1` run contract. See
+  [`../zoo/lfm2.5.md`](../zoo/lfm2.5.md).
+- **Gemma 4 E2B pipelined fast path (in this dir): `export_gemma4_decode_pipelined.py [int4lin]`** —
+  decode-only S=1 bundle whose per-layer-embedding rows arrive as a per-token INPUT (the 9.4 GB
+  PLE table stays a host mmap): in-graph embed + softcapped head, ONE unified padded KV pair,
+  oracle 8/8, **70.9 tok/s decode on M4 Max** (+20-25% over the int4km-kernel CLI, zero custom
+  kernels; int4-LINEAR per-block — eager-palettized k-means LUTs measure 2.25× slower at the
+  same bytes). Needs the full patch stack incl.
+  `../apps/coreai-pipelined-per-token-inputs.patch`, `COREAI_CHUNK_THRESHOLD=1`, and a
+  `PerTokenInputProvider` that dequants the int8 PLE row dump per token.
+- **Granite 4.0-H pipelined (in this dir): `export_granite4h_decode_pipelined.py [fp16|int8lin]`** —
+  the first Mamba2/SSM-scan rider: at S=1 the selective scan is a single recurrence step
+  (loop-free, no while_loop), states = KV (4 attn layers) + conv/SSM stacks (= the ≤2
+  extra-states budget). 1b int8lin **136.5 tok/s** / fp16 103.6 on M4 Max, oracle gate
+  16/16; `--hf-id ibm-granite/granite-4.0-h-350m` exports the 350m (ship fp16 there, 191
+  tok/s — int8 fails the gate at that scale and is no faster). Model overlay:
+  `models/macos/granite4h.py`. Same engine patch + `COREAI_CHUNK_THRESHOLD=1` run contract.
+  See [`../zoo/granite-4.0-h.md`](../zoo/granite-4.0-h.md).
 
 ## Reproduce (env)
 

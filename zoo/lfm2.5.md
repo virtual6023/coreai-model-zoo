@@ -1,0 +1,110 @@
+# LFM2.5-1.2B (text decoder) — Core AI
+
+Conv + full-attention hybrid decoder (LiquidAI): 16 layers = **10 short-conv mixers**
+(depthwise causal conv, kernel 3, B/C/x gating, no activation) + **6 GQA attention layers**
+(32 q / 8 kv heads, head_dim 64, per-head q/k RMSNorm, full-dim RoPE θ=1e6), hidden 2048,
+MLP 8192 (SwiGLU, auto-adjusted from 12288), vocab 65 536, tied head.
+Source: `LiquidAI/LFM2.5-1.2B-Instruct`.
+
+**⬇️ Converted `.aimodel` bundle (ready to run):
+[mlboydaisuke/LFM2.5-1.2B-CoreAI](https://huggingface.co/mlboydaisuke/LFM2.5-1.2B-CoreAI)** —
+`gpu-pipelined/lfm2_5_1_2b_instruct_decode_int8lin/` (full LanguageBundle incl. tokenizer;
+ships the upstream LFM Open License v1.0 LICENSE file).
+
+**The first non-Qwen architecture on the [pipelined-engine fast path](../knowledge/pipelined-engine.md)**
+— and the easiest ride so far: LFM2 has **no recurrent scan at all** (the conv mixer is a
+3-tap causal conv), so the decode graph is loop-free *by construction*, and the only extra
+state is one fixed-shape conv buffer `[10, 1, 2048, 2]` — well inside the
+extra-states patch budget (≤2). No engine changes needed beyond the existing patch stack.
+
+## Measured (macOS + iOS 27 beta, release builds, p=128 g=256, `COREAI_CHUNK_THRESHOLD=1`)
+
+| config | bundle | prefill tok/s | decode tok/s | numerics |
+|---|---:|---:|---:|---|
+| fp16 (+fp32 attn proj), M4 Max | 2.2 GB | 162.8 | **162.1** | 16/16 oracle gate, cos ≥ 0.999998 |
+| **int8 linear per-block-32 (ship), M4 Max** | **1.5 GB** | **253.3** | **253.3** | **16/16 oracle gate + HF-seeded decode step (cos ≥ 0.99992); engine path ≡ python-GPU 24/24 greedy** |
+| **int8lin, iPhone 17 Pro** (PipelinedBench, n=2×2) | 1.5 GB | 39.2–39.4 | **38.0–39.6** | **nat 24/24 + oracle 24/24 on BOTH runs — token-identical to the M4 Max GPU sequences** |
+| int8lin, iPhone 17 Pro, chat app (CoreAIChat LFM mode, 200-tok story) | 1.5 GB | 30.7 | **35.8** | coherent instruct output via the bundle chat template |
+
+- **253 tok/s on a 1.2B** beats our qwen3.5-0.8B pipelined result (204) on a model 1.5× larger.
+- Prefill ≈ decode because prefill runs as pipelined S=1 steps (`COREAI_CHUNK_THRESHOLD=1`).
+- `llm-runner` (the real engine surface, on-GPU argmax sampling): 262 tok/s in a short run,
+  warm load 2.7 s, output token-for-token identical to the python-runtime rollout (24/24).
+- **iPhone: ~39 tok/s ≈ ~87% of the naive BW ceiling** (~60 GB/s ÷ ~1.4 GB/token ≈ 45) —
+  a much higher fraction than qwen-0.8B realized (~60%); at ~1.4 GB/token the device is
+  effectively memory-bandwidth saturated. Cold GPU specialization 6.8 s, warm load 1.6 s
+  (no AOT needed). Cross-device determinism held again: iPhone greedy sequences were
+  24/24 token-identical to Mac-GPU on both fixed prompts.
+- **Chat app integrated**: CoreAIChat ([`../apps/CoreAIChat`](../apps/CoreAIChat)) has an
+  LFM picker segment next to Gemma GPU/ANE and Qwen — both pipelined modes share one
+  `PipelinedBackend` (spec-parameterized: bundle dir, HF subpath, warmup token); mode
+  switches free the previous model set first. Headless hook: `GEMMA_ENGINE=lfm2`.
+
+## Two GPU-delegate findings this port surfaced (both worked around in the model file)
+
+Both are macOS-27-beta MPSGraph GPU-delegate behaviors, found by bisection with single-layer
+probes; the workarounds live in the re-authored `models/macos/lfm2.py`:
+
+1. **Chained fixed-shape state writes are silently dropped.** Per-layer
+   `SSMState.update_states` calls compile to a read_handle → slice_update → write_handle
+   round trip per conv layer on the *same* state handle. With more than one round trip the
+   GPU delegate drops them ALL — the state buffer simply stays zero (the compiled IR is
+   correct and token-chained; a single-slot graph works; a 3-slot repro fails). Decode then
+   silently runs with no conv history: position 0 is right, everything after is garbage.
+   **Workaround: layers return their new conv columns and the model issues ONE fused
+   full-state `slice_update` per step.** (qwen3.5's 18-slot graph happens not to trigger
+   this — pattern-dependent.)
+2. **fp16 attention projections compute ~1.3% relative error under a dynamic-shape graph**
+   (the fused attention-prologue matmul accumulates in fp16; the *same* matmul in a static
+   graph measures 0.07%). LFM2.5's large q/k-norm gains (|k| up to ~14) amplify this and it
+   compounds across the 16-layer stack into garbage logits (full-stack cos 0.71 vs eager).
+   **Workaround: the four attention projections (q/k/v/out) keep fp32 weights** (cast in/out
+   around the matmul) → layer-level cos 1.000000, +~126 MB. Conv-mixer and MLP matmuls
+   measure clean in fp16 and stay fp16/int8.
+
+## int8lin recipe (this model)
+
+Per-block-32 **linear** int8 (scale-multiply dequant, no LUT — 256-entry LUT gathers are
+slow on this delegate, see the qwen3.5 card). Quantized: MLP w1/w3/w2 + conv-mixer
+in/out_proj (the bulk of the 1.17B params). Excluded: embedding (tied, fp16), depthwise
+conv1d, norms, lm_head, **and the four attention projections** (the precision-critical
+path above — quantizing them flips near-tie argmaxes: 14/16).
+
+## Numerics gating
+
+- Tier A parity ladder (fp32 eager vs HF oracle): conv block / attn block / full prefill /
+  stateful decode + teacher-forced S=1 sweep — all cosine 1.000, 16/16 top-1.
+- GPU gate (the [pipelined-engine](../knowledge/pipelined-engine.md) shipping gate):
+  teacher-forced S=1 sweep over the 16 oracle positions on a fresh state + an
+  HF-cache-seeded decode step, top-1 vs the fp32-HF oracle. **16/16 + decode for both
+  bundles.**
+- Oracle-validity note: the oracle prompt must not contain near-tie positions. Our first
+  prompt had two positions with top-2 logit margins of 0.012–0.014 (statistical ties that
+  even healthy int8 noise flips, and that fp16 passes only by luck). Gate prompts on a
+  **fp32-oracle top-2 margin ≥ 0.1 at every position** (ours: ≥ 0.40) — computable before
+  any bundle exists, so it selects the measuring instrument, not the result.
+
+## Convert it yourself
+
+```bash
+cd coreai-models   # with the lfm2 model overlay (models/macos/lfm2.py) in place
+.venv/bin/python ../coreai-models-community/conversion/export_lfm2_decode_pipelined.py int8lin
+COREAI_CHUNK_THRESHOLD=1 ./.build/release/llm-benchmark \
+    --model exports/lfm2_5_1_2b_instruct_decode_int8lin -p 128 -g 256 -n 3
+```
+
+Run contract (same as qwen3.5): Swift package patches
+[`../apps/coreai-shared-product.patch`](../apps/coreai-shared-product.patch) +
+[`../apps/coreai-pipelined-extra-states.patch`](../apps/coreai-pipelined-extra-states.patch)
+applied on a fresh `coreai-models` clone; `COREAI_CHUNK_THRESHOLD=1` before engine creation;
+never call `engine.warmup()` on the S=1 bundle (warm with a 1-token generate;
+`llm-runner` needs `--warmup exact --warmup-length 1`).
+
+## License
+
+The **model weights** are under the **LFM Open License v1.0** (LiquidAI; `lfm1.0`):
+Apache-style grants, but **Commercial Use is licensed only below a US$10 M annual-revenue
+threshold** (entities at/above it are not licensed; 501(c)(3)-class non-profits exempt for
+non-commercial/research use). Redistribution must retain notices and include the license —
+any converted-bundle upload ships the upstream `LICENSE` file alongside. The conversion
+*code* in this repo stays BSD-3-Clause.

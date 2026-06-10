@@ -1,0 +1,426 @@
+diff --git a/swift/Sources/CoreAILanguageModels/InferenceEngines/CoreAIPipelinedEngine.swift b/swift/Sources/CoreAILanguageModels/InferenceEngines/CoreAIPipelinedEngine.swift
+index e76a44c..9576d8b 100644
+--- a/swift/Sources/CoreAILanguageModels/InferenceEngines/CoreAIPipelinedEngine.swift
++++ b/swift/Sources/CoreAILanguageModels/InferenceEngines/CoreAIPipelinedEngine.swift
+@@ -282,6 +282,69 @@ private struct PipelinedExtraState {
+     let strides: [Int]
+ }
+ 
++// MARK: - Per-Token Inputs
++
++/// A model input beyond `input_ids`/`position_ids` whose value depends on the token id of
++/// the step being encoded — e.g. Gemma's per-layer-embedding rows, gathered by token id from
++/// a host-side mmap table too large to live in the graph. The engine owns one buffer holding
++/// `maxContextLength` per-step slots (slot index = token position, so in-flight prefill steps
++/// each read a distinct region and host writes never race the GPU), fills the step's slot via
++/// `EngineOptions.perTokenInputProvider`, and binds it as an additional input on every encode.
++private struct PipelinedPerTokenInput {
++    let name: String
++    let buffer: MTLBuffer
++    let scalarType: NDArray.ScalarType
++    let shape: [Int]
++    let strides: [Int]
++    let stepByteCount: Int
++}
++
++/// One-shot rendezvous between the sampler's GPU-completion callback (which learns the
++/// sampled token on a Metal callback thread) and the decode loop (which must know that token
++/// BEFORE it can gather per-token inputs for the next step). Either side may arrive first;
++/// strict deliver/take alternation lets one instance be reused across steps.
++final class TokenRendezvous: Sendable {
++    private enum State {
++        case idle
++        case token(Int32)
++        case waiter(CheckedContinuation<Int32, Never>)
++    }
++
++    private let state = OSAllocatedUnfairLock<State>(initialState: .idle)
++
++    /// Called from the sampler completion callback with the sampled token.
++    func deliver(_ token: Int32) {
++        let waiter = state.withLock { state -> CheckedContinuation<Int32, Never>? in
++            switch state {
++            case .waiter(let continuation):
++                state = .idle
++                return continuation
++            default:
++                state = .token(token)
++                return nil
++            }
++        }
++        waiter?.resume(returning: token)
++    }
++
++    /// Awaited by the encode loop after submitting the sampler for a step.
++    func take() async -> Int32 {
++        await withCheckedContinuation { continuation in
++            let ready = state.withLock { state -> Int32? in
++                switch state {
++                case .token(let token):
++                    state = .idle
++                    return token
++                default:
++                    state = .waiter(continuation)
++                    return nil
++                }
++            }
++            if let token = ready { continuation.resume(returning: token) }
++        }
++    }
++}
++
+ // MARK: - Engine Implementation
+ 
+ private struct EngineImpl: ~Copyable {
+@@ -318,6 +381,11 @@ private struct EngineImpl: ~Copyable {
+     // Fixed-shape states beyond the KV pair (SSM conv/recurrent for hybrid models)
+     let extraStates: [PipelinedExtraState]
+ 
++    // Per-token inputs beyond input_ids/position_ids (host-gathered, e.g. Gemma PLE rows)
++    let perTokenInputs: [PipelinedPerTokenInput]
++    let perTokenInputProvider: PerTokenInputProvider?
++    let sampledTokenRendezvous = TokenRendezvous()
++
+     // Logits — reuses GrowingLogitsBuffer from TensorStorage+CoreAI.swift
+     var logits: GrowingLogitsBuffer
+ 
+@@ -328,6 +396,9 @@ private struct EngineImpl: ~Copyable {
+     // State
+     var processedTokenCount: Int = 0
+     var step: Int = 0
++    // Last GPU-sampled token, mirrored to the CPU only when per-token inputs need it
++    // (the decode loop must gather the next step's rows for this token).
++    var lastSampledToken: Int32? = nil
+ 
+     // Backpressure gate — see PipelineGate doc-comment for the failure mode it prevents.
+     // Capacity 3 covers {encode logits + sampler commit + optional KV-cache grow} in flight.
+@@ -352,11 +423,17 @@ private struct EngineImpl: ~Copyable {
+                 "Cannot find function '\(config.function)' in model")
+         }
+ 
+-        // Validate: 2 inputs, 1+ output, 2+ states (KV cache pair, plus optional
++        // Validate: 2+ inputs (input_ids, position_ids, plus optional host-gathered
++        // per-token inputs), 1+ output, 2+ states (KV cache pair, plus optional
+         // fixed-shape extras such as the SSM conv/recurrent states of hybrid models)
+-        guard descriptor.inputNames.count == 2 else {
++        guard descriptor.inputNames.count >= 2 else {
+             throw InferenceRuntimeError.invalidInputType(
+-                "Expected 2 inputs, got \(descriptor.inputNames.count): \(descriptor.inputNames)")
++                "Expected at least 2 inputs, got \(descriptor.inputNames.count): \(descriptor.inputNames)")
++        }
++        guard descriptor.inputNames.count - 2 <= Self.maxPerTokenInputs else {
++            throw InferenceRuntimeError.invalidInputType(
++                "At most \(Self.maxPerTokenInputs) per-token inputs beyond input_ids/position_ids "
++                    + "are supported, got \(descriptor.inputNames.count - 2): \(descriptor.inputNames.dropFirst(2))")
+         }
+         guard descriptor.outputNames.count >= 1 else {
+             throw InferenceRuntimeError.invalidOutputType(
+@@ -414,6 +491,55 @@ private struct EngineImpl: ~Copyable {
+                     + extraStatesLocal.map(\.name).joined(separator: ", "))
+         }
+ 
++        // Inputs beyond input_ids/position_ids are per-token inputs: fixed-shape, filled by
++        // the host provider once per step. One owned buffer holds maxContextLength slots
++        // (slot = token position) so in-flight steps read disjoint regions.
++        var perTokenInputsLocal: [PipelinedPerTokenInput] = []
++        for name in descriptor.inputNames.dropFirst(2) {
++            guard case .ndArray(let desc) = descriptor.inputDescriptor(of: name) else {
++                throw InferenceRuntimeError.invalidInputType(
++                    "Cannot get descriptor for per-token input '\(name)'")
++            }
++            guard !desc.shape.contains(where: { $0 < 0 }) else {
++                throw InferenceRuntimeError.invalidInputType(
++                    "Per-token input '\(name)' has dynamic dims \(desc.shape) — per-token inputs "
++                        + "must be fixed-shape (S=1)")
++            }
++            let resolved = desc.resolvingDynamicDimensions(desc.shape)
++            let stepByteCount = resolved.minimumByteCount
++            let byteCount = config.maxContextLength * stepByteCount
++            guard let buf = device.makeBuffer(length: byteCount, options: .storageModeShared) else {
++                throw InferenceRuntimeError.bufferAllocationFailed(
++                    "per-token input '\(name)' (\(byteCount) bytes)")
++            }
++            memset(buf.contents(), 0, byteCount)
++            perTokenInputsLocal.append(
++                PipelinedPerTokenInput(
++                    name: name,
++                    buffer: buf,
++                    scalarType: desc.scalarType,
++                    shape: desc.shape,
++                    strides: resolved.preferredStrides,
++                    stepByteCount: stepByteCount
++                ))
++        }
++        if !perTokenInputsLocal.isEmpty {
++            guard options.perTokenInputProvider != nil else {
++                throw InferenceRuntimeError.invalidInputType(
++                    "Model declares per-token input(s) "
++                        + perTokenInputsLocal.map(\.name).joined(separator: ", ")
++                        + " but EngineOptions.perTokenInputProvider is nil — set a provider "
++                        + "that gathers the rows for each token id")
++            }
++            let fmt = ByteCountFormatter()
++            fmt.countStyle = .memory
++            let total = perTokenInputsLocal.reduce(0) { $0 + $1.buffer.length }
++            CLILogger.log(
++                "Pipelined engine carrying \(perTokenInputsLocal.count) per-token input(s): "
++                    + perTokenInputsLocal.map(\.name).joined(separator: ", ")
++                    + " (\(fmt.string(fromByteCount: Int64(total))) slots)")
++        }
++
+         // Extract state descriptors for KV cache shape/type
+         guard case .ndArray(let keyCacheDesc) = descriptor.stateDescriptor(of: keyCacheName),
+             case .ndArray(let valueCacheDesc) = descriptor.stateDescriptor(of: valueCacheName)
+@@ -521,6 +647,8 @@ private struct EngineImpl: ~Copyable {
+         self.cachePositionBuffers = (cachePosBuf0, cachePosBuf1)
+         self.kvCache = kvCacheLocal
+         self.extraStates = extraStatesLocal
++        self.perTokenInputs = perTokenInputsLocal
++        self.perTokenInputProvider = options.perTokenInputProvider
+         self.logits = logitsRef
+         self.cachedSampler = nil
+         self.cachedSamplerTemperature = nil
+@@ -548,6 +676,47 @@ private struct EngineImpl: ~Copyable {
+         )
+     }
+ 
++    // MARK: - Per-Token Input Binding
++
++    /// Maximum number of per-token inputs beyond input_ids/position_ids.
++    static let maxPerTokenInputs = 2
++
++    /// Fill each per-token input's slot for `position` with rows for `token` (via the
++    /// provider) and merge the slot bindings into `inputs`. Slot = position keeps in-flight
++    /// steps on disjoint buffer regions.
++    private func bindPerTokenInputs(
++        token: Int32, position: Int,
++        into inputs: inout [String: InferenceFunction.AsyncValue]
++    ) throws {
++        guard let provider = perTokenInputProvider else {
++            throw InferenceRuntimeError.invalidState(
++                "Per-token inputs present but no provider — engine init should have rejected this")
++        }
++        for perToken in perTokenInputs {
++            let byteOffset = position * perToken.stepByteCount
++            provider(
++                perToken.name, token, position,
++                perToken.buffer.contents() + byteOffset, perToken.stepByteCount)
++            inputs[perToken.name] = unsafe InferenceFunction.AsyncValue(
++                unsafeBuffer: perToken.buffer,
++                byteOffset: byteOffset,
++                scalarType: perToken.scalarType,
++                shape: perToken.shape,
++                strides: perToken.strides
++            )
++        }
++    }
++
++    /// Per-token inputs constrain the engine to S=1 steps: each step's rows are gathered for
++    /// exactly one token. Run with `COREAI_CHUNK_THRESHOLD=1` so prefill chunks are S=1 too.
++    private func requireSingleTokenStep(_ queryLength: Int) throws {
++        guard queryLength == 1 else {
++            throw InferenceRuntimeError.invalidArgument(
++                "Model has per-token inputs — only S=1 steps are supported, got query length "
++                    + "\(queryLength). Set COREAI_CHUNK_THRESHOLD=1 so prefill runs as S=1 steps.")
++        }
++    }
++
+     // MARK: - Sampler
+ 
+     private mutating func getOrCreateSampler(for config: SamplingConfiguration) throws -> any MPSGraphSampler {
+@@ -598,6 +767,21 @@ private struct EngineImpl: ~Copyable {
+         let actualTokenCount = tokens.isEmpty ? 1 : tokens.count
+         let queryLength = actualTokenCount
+ 
++        // Per-token inputs: resolve this step's token id (prompt token during prefill;
++        // the previous GPU-sampled token during decode, mirrored via the rendezvous).
++        var perTokenStepToken: Int32? = nil
++        if !perTokenInputs.isEmpty {
++            try requireSingleTokenStep(queryLength)
++            if let promptToken = tokens.first {
++                perTokenStepToken = promptToken
++            } else if let sampled = lastSampledToken {
++                perTokenStepToken = sampled
++            } else {
++                throw InferenceRuntimeError.invalidState(
++                    "Decode step with per-token inputs before any sampled token")
++            }
++        }
++
+         defer {
+             processedTokenCount += actualTokenCount
+             step += 1
+@@ -649,10 +833,13 @@ private struct EngineImpl: ~Copyable {
+             strides: posStrides
+         )
+ 
+-        let asyncInputs: [String: InferenceFunction.AsyncValue] = [
++        var asyncInputs: [String: InferenceFunction.AsyncValue] = [
+             inputIdsName: tokenValue,
+             positionIdsName: posValue,
+         ]
++        if let stepToken = perTokenStepToken {
++            try bindPerTokenInputs(token: stepToken, position: currentStep, into: &asyncInputs)
++        }
+ 
+         // Build States as AsyncMutableValue (KV cache, in-place update)
+         let keyBuffer = kvCache.keyBinding.metalBuffer
+@@ -751,10 +938,14 @@ private struct EngineImpl: ~Copyable {
+         do {
+             let queue = pipelineQueue
+             let localInFlightGate = inFlightGate
++            let localRendezvous = perTokenInputs.isEmpty ? nil : sampledTokenRendezvous
+             let completionCallback: (Int32) -> Void = { nextToken in
+                 // Release the pipeline slot acquired before encode. Happens on
+                 // Metal's callback thread — PipelineGate.release() is thread-safe.
+                 localInFlightGate.release()
++                // Mirror the sampled token to the CPU so the next step can gather
++                // its per-token inputs (no-op for models without them).
++                localRendezvous?.deliver(nextToken)
+                 InstrumentsProfiler.endCustomInterval(
+                     name: "CoreAIPipelinedEncodeNextStep",
+                     signpostID: encodeStepID,
+@@ -785,6 +976,13 @@ private struct EngineImpl: ~Copyable {
+         }
+ 
+         sampleSpan.end()
++
++        // With per-token inputs, the next step's gather needs THIS step's sampled token on
++        // the CPU — wait for the sampler completion here. This serializes the GPU pipeline
++        // (the win over a hand-rolled loop is the on-GPU argmax + on-device KV, not depth).
++        if !perTokenInputs.isEmpty {
++            lastSampledToken = await sampledTokenRendezvous.take()
++        }
+     }
+ 
+     // MARK: - Token Generation
+@@ -960,6 +1158,9 @@ private struct EngineImpl: ~Copyable {
+     private mutating func _encodeChunk(tokens: [Int32]) async throws {
+         let queryLength = tokens.count
+         let currentStep = processedTokenCount
++        if !perTokenInputs.isEmpty {
++            try requireSingleTokenStep(queryLength)
++        }
+ 
+         let chunkID = InstrumentsProfiler.beginCustomInterval(
+             name: "CoreAIPipelinedChunk",
+@@ -992,9 +1193,12 @@ private struct EngineImpl: ~Copyable {
+             unsafeBuffer: cachePosBuffer, byteOffset: 0,
+             scalarType: .int32, shape: posShape, strides: posStrides)
+ 
+-        let asyncInputs: [String: InferenceFunction.AsyncValue] = [
++        var asyncInputs: [String: InferenceFunction.AsyncValue] = [
+             inputIdsName: tokenValue, positionIdsName: posValue,
+         ]
++        if !perTokenInputs.isEmpty, let chunkToken = tokens.first {
++            try bindPerTokenInputs(token: chunkToken, position: currentStep, into: &asyncInputs)
++        }
+ 
+         let keyBuffer = kvCache.keyBinding.metalBuffer
+         let keyShape = kvCache.keyBinding.layout.shape
+@@ -1061,8 +1265,11 @@ private struct EngineImpl: ~Copyable {
+         step = 0
+         cachedSampler = nil
+         cachedSamplerTemperature = nil
++        lastSampledToken = nil
+         // Fresh sequence: SSM-style extra states must restart from zero. The KV pair
+         // needs no clearing — attention only reads positions below the new offset.
++        // Per-token input slots need no clearing either: each step's slot is fully
++        // rewritten by the provider before it is bound.
+         for extra in extraStates {
+             memset(extra.buffer.contents(), 0, extra.buffer.length)
+         }
+@@ -1080,12 +1287,16 @@ private struct EngineImpl: ~Copyable {
+         // from warming every bucket shape — the jump from none→any is what matters.
+         let defaultWarmupLength = 256
+ 
+-        let shapesToWarm: [Int]
++        var shapesToWarm: [Int]
+         if queryLength > 0 {
+             shapesToWarm = [queryLength]
+         } else {
+             shapesToWarm = [1, defaultWarmupLength]
+         }
++        if !perTokenInputs.isEmpty {
++            // Per-token-input graphs are S=1 static — larger warmup shapes would be rejected.
++            shapesToWarm = [1]
++        }
+ 
+         CLILogger.log("Running warmup for \(shapesToWarm.count) shape(s)")
+ 
+@@ -1124,9 +1335,13 @@ private struct EngineImpl: ~Copyable {
+             let posValue = unsafe InferenceFunction.AsyncValue(
+                 unsafeBuffer: cachePosBuffer, byteOffset: 0,
+                 scalarType: .int32, shape: pShape, strides: pStrides)
+-            let asyncInputs: [String: InferenceFunction.AsyncValue] = [
++            var asyncInputs: [String: InferenceFunction.AsyncValue] = [
+                 inputIdsName: tokenValue, positionIdsName: posValue,
+             ]
++            if !perTokenInputs.isEmpty {
++                // Warm with the same dummy token the ids buffer holds, at position 0.
++                try bindPerTokenInputs(token: 1, position: 0, into: &asyncInputs)
++            }
+ 
+             let keyBuffer = kvCache.keyBinding.metalBuffer
+             let kShape = kvCache.keyBinding.layout.shape
+diff --git a/swift/Sources/CoreAILanguageModels/InferenceEngines/EngineFactory.swift b/swift/Sources/CoreAILanguageModels/InferenceEngines/EngineFactory.swift
+index b7a7e33..e75b73d 100644
+--- a/swift/Sources/CoreAILanguageModels/InferenceEngines/EngineFactory.swift
++++ b/swift/Sources/CoreAILanguageModels/InferenceEngines/EngineFactory.swift
+@@ -219,6 +219,23 @@ public struct EngineFactory: Sendable {
+     }
+ }
+ 
++/// Fills one per-token model input for one step.
++///
++/// Models may declare inputs beyond `input_ids`/`position_ids` whose values depend on the
++/// token id of the step being encoded — e.g. Gemma's per-layer-embedding rows, gathered by
++/// token id from a host-side table too large to live in the graph. The pipelined engine calls
++/// the provider once per extra input per step, passing the input's `name`, the step's `token`
++/// id and `position`, and a `destination` the provider must fill with exactly `byteCount`
++/// bytes laid out as the input's descriptor (e.g. fp16 `[1, 1, layers, dim]`).
++///
++/// Called on the engine's inference task (prefill: token known from the prompt) or right
++/// after the GPU sampler reports the previous token (decode) — keep it fast (sub-millisecond
++/// mmap gathers); the decode loop is serialized on it.
++public typealias PerTokenInputProvider = @Sendable (
++    _ name: String, _ token: Int32, _ position: Int,
++    _ destination: UnsafeMutableRawPointer, _ byteCount: Int
++) -> Void
++
+ /// Options that customize how the factory creates an inference engine and how
+ /// the engine manages its KV cache.
+ public struct EngineOptions: Sendable {
+@@ -248,6 +265,12 @@ public struct EngineOptions: Sendable {
+     /// - `.chunked`: the window size.
+     public let kvCacheSize: Int?
+ 
++    /// Host-side filler for per-token model inputs (inputs beyond `input_ids`/`position_ids`).
++    ///
++    /// Required when the model declares per-token inputs; ignored otherwise. Only the
++    /// pipelined engine supports per-token inputs. See ``PerTokenInputProvider``.
++    public let perTokenInputProvider: PerTokenInputProvider?
++
+     /// Creates an options value with the variant and KV cache settings you specify.
+     ///
+     /// - Parameters:
+@@ -256,14 +279,18 @@ public struct EngineOptions: Sendable {
+     ///   - kvCacheStrategy: The KV cache allocation strategy. Defaults to `.auto`.
+     ///   - kvCacheSize: The KV cache size in tokens, or `nil` to use the strategy's default size.
+     ///     Defaults to `nil`.
++    ///   - perTokenInputProvider: The filler for per-token model inputs, or `nil` for models
++    ///     without them. Defaults to `nil`.
+     public init(
+         variant: String? = nil,
+         kvCacheStrategy: KVCacheStrategy = .auto,
+-        kvCacheSize: Int? = nil
++        kvCacheSize: Int? = nil,
++        perTokenInputProvider: PerTokenInputProvider? = nil
+     ) {
+         self.variant = variant
+         self.kvCacheStrategy = kvCacheStrategy
+         self.kvCacheSize = kvCacheSize
++        self.perTokenInputProvider = perTokenInputProvider
+     }
+ 
+     /// Returns the KV cache size in tokens that the engine uses for a given context length.

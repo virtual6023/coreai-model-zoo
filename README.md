@@ -11,9 +11,6 @@ on-device, with the conversion code and a knowledge base. Successor to
 | **Qwen3.5-0.8B** | [🤗 qwen3.5-0.8B-CoreAI](https://huggingface.co/mlboydaisuke/qwen3.5-0.8B-CoreAI) | Apache-2.0 |
 | **Gemma 4 E2B** (text) | [🤗 gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI) | Gemma |
 
-Each repo ships **one bundle per platform × compute unit — the best verified configuration
-only**. Every number below is reproduced by the exact files in these repos.
-
 ### Decode throughput (greedy; output top-1 exact vs the Hugging Face reference)
 
 | | iPhone 17 Pro · GPU | iPhone 17 Pro · ANE | M4 Max · GPU |

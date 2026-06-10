@@ -156,11 +156,17 @@ ANY entry count** — 256-entry int8 (qwen 113) and 16-entry int4 (gemma 31.5) b
 per-block LINEAR (scale-multiply) dequant at the same or even 2× the bytes. (Apple's official
 int4-km-g8 models are fast, but that path isn't reproducible via `palettize_pytorch_model`.)
 `quantize_pytorch_model` takes `dtype: "int4"` with per-block granularity — **linear int4
-per-block-32 was top-1 EXACT on gemma4** (8/8; qwen3.5 is int4-NO-GO at any scheme tried —
-model-dependent, gate it). The eager quantizer **silently skips tied weights** — clone the
-embedding table first if you actually want the head quantized (and measure before believing
-it helps: untied int8 head was a no-win on qwen, but on gemma4's 262K vocab the head is 35%
-of per-token reads and quantizing it matters).
+per-block-32 was top-1 EXACT on gemma4** (8/8) but **qwen3.5 is int4-NO-GO at every scheme
+tried**: k-means g32 and g8+int8-rescue on the 0.8B, and linear per-block-32 on the 2B
+(gate 10/16 and it fails even the cache-seeded single step — transformer/SSM-in_proj damage,
+not head damage; also only 156 tok/s vs int8hu's 159, int4-linear dequant underuses BW).
+Quantization sensitivity is a model property — gate it per model. The eager quantizer
+**silently skips tied weights** — clone the embedding table first if you actually want the
+head quantized, and measure + gate before believing it helps: untied int8 head was a no-win
+on the 0.8B (204→201, head not critical path) but on the 2B it's **+25% (127→159) yet flips
+6/16 oracle top-1s** — the 248K-vocab fp16 head is ~43% of the 2B's per-token read, so a
+quality-preserving head compression (km-g32 head / finer blocks / fp8) is that model's open
+lever; on gemma4's 262K vocab the (int4-tolerant) head quantizes fine and matters.
 
 ## Numerics gating (how to judge a quantized bundle)
 

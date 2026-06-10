@@ -137,6 +137,7 @@ release `llm-benchmark`, `COREAI_CHUNK_THRESHOLD=1`):
 | **int8 linear per-block-32 (ship)** | **2.3 GB** | 127.0 | **127.2** | 16/16 single-step top-1 vs the fp32 HF oracle + HF-cache-seeded decode step (cos 0.99999) |
 | fp16 | 3.5 GB | 91.2 | 90.9 | 16/16 + decode step (cos 0.999999) |
 | + untied int8 lm_head (`int8hu`) | 2.8 GB | 151.1 | 159.1 | **FAILS the gate (10/16)** — not shippable |
+| int4 **linear** per-block-32 (`int4lin`) | 1.7 GB | 156.2 | 156.0 | **FAILS the gate (10/16 AND the HF-seeded decode step**, top-1 561≠220, cos 0.9955**)** |
 
 The `int8hu` row is the opposite of the 0.8B finding (there: gate PASS, no speed
 win): on the 2B the fp16 tied head is ~1.0 GB of the ~2.4 GB per-token read, so
@@ -144,6 +145,16 @@ quantizing it is worth **+25%** — but the 248 K-vocab head flips 6/16 oracle
 top-1s at int8 per-block-32. A quality-preserving head compression (k-means-g32
 head, finer blocks, or fp8 via TensorOps) is the open lever for both Mac (~159)
 and iPhone (~26, CoreML parity).
+
+The `int4lin` row closes the int4 question **for both quantizer families**: the
+0.8B failed int4 as k-means (g32, and g8 + int8 rescue variants); the 2B now
+also fails int4 as *linear* per-block-32 — and unlike `int8hu` it fails even
+the clean cache-seeded single step, i.e. the damage is in the transformer (SSM
+in_projs), not just the head. **int8 is the qwen3.5 floor regardless of
+quantizer** (contrast Gemma 4, which ships int4 at oracle 8/8 — quantization
+sensitivity is a property of this GDN hybrid, not of the toolchain). It is not
+even faster than `int8hu` (156 vs 159): int4-linear dequant underuses bandwidth
+on this delegate, matching the gemma4 int4lin observation.
 
 **Mac-recommended; runs on iPhone too** (device-measured, iPhone 17 Pro
 2026-06-11): decode **19.1–21.3 tok/s** (prefill ≈ same, S=1) with perfect

@@ -122,7 +122,7 @@ def write_bundle_metadata(out_dir: Path, name: str, hf_id: str, cfg, max_ctx: in
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("mode", nargs="?", default="int8lin",
-                    choices=["fp16", "int8", "int8lin", "int8hu"])
+                    choices=["fp16", "int8", "int8lin", "int8hu", "int4lin"])
     ap.add_argument("--hf-id", default="Qwen/Qwen3.5-0.8B")
     ap.add_argument("--out-dir", default="exports")
     ap.add_argument("--max-ctx", type=int, default=4096)
@@ -177,10 +177,10 @@ def main() -> None:
         print("palettizing (int8 k-means group-32, lm_head/conv1d excluded) ...")
         model = palettize_pytorch_model(
             model, tuple(reference_inputs.values()), palettization_config())
-    elif args.mode in ("int8lin", "int8hu"):
+    elif args.mode in ("int8lin", "int8hu", "int4lin"):
         from coreai_models.export.compression import quantize_pytorch_model
 
-        cfg_q = linear_quant_config()
+        cfg_q = linear_quant_config("int4" if args.mode == "int4lin" else "int8")
         if args.mode == "int8hu":
             cfg_q["module_name_configs"] = {}
             model.lm_head.weight = torch.nn.Parameter(

@@ -23,6 +23,10 @@ Hard-won, verified notes on Apple's Core AI (iOS/macOS 27) — what the docs don
 - [`custom-metal-kernels.md`](custom-metal-kernels.md) — `TorchMetalKernel` (WWDC 325): the API, the
   register-then-add order, MSL embedded in the `.aimodel`, GPU-only, what to (and not to) kernelize.
   Still the tool when a model CAN'T ride the pipelined engine (e.g. Gemma 4).
+- [`tensorops-quantized-kernels.md`](tensorops-quantized-kernels.md) — the layer UNDER custom kernels
+  (WWDC 330): TensorOps quantized matmul (int4/int8 = OS 26; fp4/fp8/int2 + E8M0 scale planes = OS 27),
+  cooperative tensors, the FlashAttention recipe, and the M5/A19 GPU **neural accelerator** — the
+  compute-bound/prefill lever hand-rolled MSL can't reach.
 
 ## ANE-later track (when the beta KV-write bug lifts + int4 head + AOT)
 - [`aot-and-specialization.md`](aot-and-specialization.md) — specialization, `AIModelCache` /
@@ -42,6 +46,6 @@ Hard-won, verified notes on Apple's Core AI (iOS/macOS 27) — what the docs don
   non-standard architectures, macOS/Xcode 27 setup (incl. running Xcode 27 beta without sudo).
 
 Primary official sources behind these notes: the open repos (`coreai-torch`, `coreai-optimization`,
-`coreai-models` incl. its agent skills), the WWDC26 talks **324 / 325 / 326** (verbatim transcripts in
-`ondevice/_wwdc{324,325,326}_transcript.txt`), and `developer.apple.com/core-ai/`. Verified against
+`coreai-models` incl. its agent skills), the WWDC26 talks **324 / 325 / 326 / 330** (verbatim transcripts in
+`ondevice/_wwdc{324,325,326,330}_transcript.txt`), and `developer.apple.com/core-ai/`. Verified against
 Hugging Face references (convert + numeric parity); on-device iOS 27 notes marked where still in bring-up.

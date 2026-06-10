@@ -107,4 +107,4 @@ conv.to_coreai().optimize()
 - **Custom int8 wins only on BIG memory-bound matmuls** (FFN, the 262144-vocab head): a fused int8 dequant-LUT matvec (reads only uint8 indices + a tiny per-group codebook, LUT gather fused into the matvec) beat both int8-MPSGraph and fp16-MPSGraph at int8 memory. Don't kernelize small projections (k/v).
 - **Prefer native SDPA on GPU** (`F.scaled_dot_product_attention`) — already fused; don't hand-roll it.
 - Compute fp16 for throughput; use fp32 accumulation selectively for numerically sensitive reductions (this is the same fp32-accumulation root cause as the ANE Conv2d-1×1 fix).
-- The "Optimize custom ML operations with Metal tensors" talk (separate, Metal-tensors) is the hand-tuned-kernel reference for squeezing a single kernel.
+- The "Optimize custom ML operations with Metal tensors" talk (WWDC 330) is the hand-tuned-kernel reference for squeezing a single kernel — TensorOps quantized matmul, cooperative tensors, FlashAttention, and the M5/A19 neural accelerator. Extracted: [`tensorops-quantized-kernels.md`](tensorops-quantized-kernels.md).

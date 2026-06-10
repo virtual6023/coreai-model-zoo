@@ -1,15 +1,17 @@
-// Gemma4ChatEngine — the RELEASE UI engine: user-selectable GPU / ANE compute modes over the two
-// device-verified gemma4 E2B paths, one chat surface.
+// Gemma4ChatEngine — the RELEASE UI engine: user-selectable modes over the device-verified
+// paths, one chat surface.
 //
 //   GPU  -> Gemma4MonolithBackend (metal-kernel host-cache monolith + head-argmax kernel, 8/8)
 //   ANE  -> Gemma4ChunkBackend    (6-chunk host-cache + on-ANE argmax head, 8/8)
+//   Qwen -> PipelinedBackend(.qwen) (Qwen3.5-0.8B int8lin, coreai-pipelined engine)
+//   LFM  -> PipelinedBackend(.lfm2) (LFM2.5-1.2B int8lin, coreai-pipelined engine)
 //
-// Mode switch frees the current backend's models before loading the other (the two sets together
+// Mode switch frees the current backend's models before loading the other (the sets together
 // approach the jetsam ceiling). Each generate() resets the host-owned KV and prefills the current
 // user message only (single-turn semantics, same as the verified harnesses).
 //
 // Headless hooks (devicectl process launch --console --environment-variables):
-//   GEMMA_ENGINE = gpu (default) | ane     initial mode
+//   GEMMA_ENGINE = gpu (default) | ane | qwen | lfm2   initial mode
 //   GEMMA_VERIFY = 1                        drive the HF-oracle ids through the SELECTED release
 //                                           engine, print match n/8 (the release-path 8/8 check)
 //   GEMMA_PROMPT / GEMMA_N                  generate + print output, tok/s, per-token profile
@@ -34,10 +36,24 @@ protocol Gemma4Backend: AnyObject {
 }
 
 enum GemmaMode: String, CaseIterable, Identifiable {
-    case gpu = "GPU", ane = "ANE", qwen = "Qwen"
+    case gpu = "GPU", ane = "ANE", qwen = "Qwen", lfm2 = "LFM"
     var id: String { rawValue }
     /// Model title shown in the header for this mode.
-    var modelTitle: String { self == .qwen ? "Qwen3.5 0.8B" : "Gemma 4 E2B" }
+    var modelTitle: String {
+        switch self {
+        case .qwen: "Qwen3.5 0.8B"
+        case .lfm2: "LFM2.5 1.2B"
+        case .gpu, .ane: "Gemma 4 E2B"
+        }
+    }
+    /// Non-nil for the modes that ride the coreai-pipelined engine.
+    var pipelinedSpec: PipelinedBackend.Spec? {
+        switch self {
+        case .qwen: PipelinedBackend.qwen
+        case .lfm2: PipelinedBackend.lfm2
+        case .gpu, .ane: nil
+        }
+    }
 }
 
 @MainActor
@@ -51,7 +67,7 @@ final class Gemma4ChatEngine: ObservableObject {
     @Published var stats = ""
 
     private var backend: Gemma4Backend?
-    private var qwenBackend: QwenPipelinedBackend?  // .qwen mode (pipelined engine, own loop)
+    private var pipelined: PipelinedBackend?  // .qwen / .lfm2 (pipelined engine, own loop)
     private var loadedMode: GemmaMode?  // mode the current backend was loaded for
     private var tokenizer: Tokenizer!
     private let EOT = 106               // gemma <end_of_turn>
@@ -61,6 +77,7 @@ final class Gemma4ChatEngine: ObservableObject {
         switch ProcessInfo.processInfo.environment["GEMMA_ENGINE"] {
         case "ane": mode = .ane
         case "qwen": mode = .qwen
+        case "lfm2", "lfm": mode = .lfm2
         default: mode = .gpu
         }
     }
@@ -73,9 +90,11 @@ final class Gemma4ChatEngine: ObservableObject {
 
     // Where the published artifact set for each mode lives (GEMMA_REPO / the UI field override it).
     static func defaultRepo(for mode: GemmaMode) -> String {
-        mode == .qwen
-            ? "https://huggingface.co/mlboydaisuke/qwen3.5-0.8B-CoreAI"
-            : "https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI"
+        switch mode {
+        case .qwen: "https://huggingface.co/mlboydaisuke/qwen3.5-0.8B-CoreAI"
+        case .lfm2: "https://huggingface.co/mlboydaisuke/LFM2.5-1.2B-CoreAI"
+        case .gpu, .ane: "https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI"
+        }
     }
 
     // Download targets (repo subpath -> name under Documents/models) the CURRENT mode still
@@ -85,8 +104,9 @@ final class Gemma4ChatEngine: ObservableObject {
     func missingDownloads() -> [ModelDownloader.Item] {
         var paths: [(remote: String, local: String)]
         switch mode {
-        case .qwen:
-            paths = [(QwenPipelinedBackend.hfRemotePath, QwenPipelinedBackend.bundleName)]
+        case .qwen, .lfm2:
+            let spec = mode.pipelinedSpec!
+            paths = [(spec.hfRemotePath, spec.bundleName)]
         case .gpu:
             paths = [("ios-frontend/gemma4_gather_raw", "gemma4_gather_raw"),
                      ("ios-gpu/gemma4_e2b_metal_int4km_L35.aimodel", "gemma4_e2b_metal_int4km_L35.aimodel"),
@@ -113,17 +133,17 @@ final class Gemma4ChatEngine: ObservableObject {
         loading = true; ready = false
         status = "loading \(mode.rawValue) engine…"
         // Free the previous mode's models BEFORE loading the next set (jetsam headroom).
-        backend = nil; qwenBackend?.unload(); qwenBackend = nil; loadedMode = nil
+        backend = nil; pipelined?.unload(); pipelined = nil; loadedMode = nil
         let target = mode
         do {
             let tLoad = Date()
-            if target == .qwen {
-                let qb = QwenPipelinedBackend()
-                try await qb.load()
-                qwenBackend = qb
+            if let spec = target.pipelinedSpec {
+                let pb = PipelinedBackend(spec: spec)
+                try await pb.load()
+                pipelined = pb
                 loadedMode = target
                 ready = true
-                status = "Qwen ⚡pipelined ready · ctx \(qb.ctx)"
+                status = "\(spec.label) ready · ctx \(pb.ctx)"
             } else {
                 let be: Gemma4Backend = (target == .gpu) ? Gemma4MonolithBackend() : Gemma4ChunkBackend()
                 try await be.load()
@@ -154,8 +174,8 @@ final class Gemma4ChatEngine: ObservableObject {
     // q1 prefill (head only at the last prompt position) + greedy decode, streamed to `output`.
     func generate(_ prompt: String, maxNew: Int? = nil) async {
         guard ready, !busy else { return }
-        if mode == .qwen {
-            await generateQwen(prompt, maxNew: maxNew)
+        if mode.pipelinedSpec != nil {
+            await generatePipelined(prompt, maxNew: maxNew)
             return
         }
         guard let be = backend else { return }
@@ -203,14 +223,14 @@ final class Gemma4ChatEngine: ObservableObject {
         }
     }
 
-    // Qwen pipelined path: the engine streams its own loop (async encode + on-GPU
-    // argmax), so generation is a stream consumption, not a host step() loop.
-    private func generateQwen(_ prompt: String, maxNew: Int?) async {
-        guard let qb = qwenBackend else { return }
+    // Pipelined path (qwen / lfm2): the engine streams its own loop (async encode +
+    // on-GPU argmax), so generation is a stream consumption, not a host step() loop.
+    private func generatePipelined(_ prompt: String, maxNew: Int?) async {
+        guard let pb = pipelined else { return }
         busy = true; output = ""; stats = ""
         defer { busy = false }
         do {
-            let st = try await qb.generate(prompt, maxNew: maxNew ?? 1024) { [weak self] text in
+            let st = try await pb.generate(prompt, maxNew: maxNew ?? 1024) { [weak self] text in
                 self?.output = text  // live stream
             }
             stats = st.summary

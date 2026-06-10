@@ -36,7 +36,7 @@ struct ChatView: View {
             .safeAreaInset(edge: .top) { topBar }
             .safeAreaInset(edge: .bottom) { inputBar }
         }
-        // Mode switch (gemma GPU monolith <-> gemma ANE chunks <-> qwen pipelined): point the
+        // Mode switch (gemma GPU monolith / gemma ANE chunks / qwen / lfm2 pipelined): point the
         // download field at that mode's HF repo (unless GEMMA_REPO pins it) and reload.
         .onChange(of: engine.mode) { _, m in
             if ProcessInfo.processInfo.environment["GEMMA_REPO"] == nil {
@@ -74,7 +74,7 @@ struct ChatView: View {
                 ForEach(GemmaMode.allCases) { m in Text(m.rawValue).tag(m) }
             }
             .pickerStyle(.segmented)
-            .frame(width: 190)
+            .frame(width: 240)
             .disabled(engine.busy || engine.loading)
             Text(engine.status)
                 .font(.caption).foregroundStyle(engine.ready ? .green : .secondary)
@@ -160,6 +160,7 @@ struct ChatView: View {
                     case .gpu: "~4.1"
                     case .ane: "~2.1–4.7"
                     case .qwen: "~1.0"
+                    case .lfm2: "~1.5"
                     }
                     Label("Download \(engine.mode.rawValue) set (\(size) GB)",
                           systemImage: "arrow.down.circle")

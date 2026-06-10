@@ -3,7 +3,9 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var engine = FastEngine()
     @StateObject private var downloader = ModelDownloader()
-    @State private var prompt = "The capital of France is"
+    // QWEN_PROMPT overrides the default prompt (headless TTFT probes feed a long prompt here).
+    @State private var prompt = ProcessInfo.processInfo.environment["QWEN_PROMPT"]
+        ?? "The capital of France is"
     @State private var maxTokens = 48
     @State private var computeUnit = ProcessInfo.processInfo.environment["QWEN_CU"] ?? "gpu"
     @State private var loadError: String?
@@ -19,6 +21,12 @@ struct ContentView: View {
     // selects the chunked export (requires re-pushing hc0..3 from a --num-chunks 4 export).
     private let numChunks = Int(ProcessInfo.processInfo.environment["QWEN_CHUNKS"] ?? "1") ?? 1
     private let computeUnits = ["ane", "gpu", "cpu"]
+    // QWEN_KIND selects the decode artifact family (default int8v3 = the fused-kernel release
+    // config; QWEN_KIND=fp16 = the previous fp16 monolith).
+    private let kindSuffix: String = {
+        let k = ProcessInfo.processInfo.environment["QWEN_KIND"] ?? "int8v3"
+        return (k.isEmpty || k == "fp16") ? "" : "_\(k)"
+    }()
 
     var body: some View {
         NavigationStack {
@@ -63,7 +71,7 @@ struct ContentView: View {
                     Text(err).font(.caption).foregroundStyle(.red)
                 }
                 if modelMissing { downloadPanel }
-                Text(engine.stats.isEmpty ? "Core AI · Qwen3.5-0.8B fp16 · static ctx-2048 · GPU monolith" : engine.stats)
+                Text(engine.stats.isEmpty ? "Core AI · Qwen3.5-0.8B int8 kernels · static ctx-2048 · GPU monolith + q16 prefill" : engine.stats)
                     .font(.caption).foregroundStyle(.secondary)
             }
             .padding()
@@ -84,7 +92,7 @@ struct ContentView: View {
 
     private func reload(cu: String) async {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        guard FileManager.default.fileExists(atPath: docs.appendingPathComponent("qwen3_5_0_8b_ios_hc0.aimodel").path),
+        guard FileManager.default.fileExists(atPath: docs.appendingPathComponent("qwen3_5_0_8b_ios_hc0\(kindSuffix).aimodel").path),
               let tokFolder = tokenizerFolder() else {
             modelMissing = true
             loadError = "Model not on device — download it below (or push with devicectl)."
@@ -121,7 +129,7 @@ struct ContentView: View {
                 Button {
                     Task { await downloadModel() }
                 } label: {
-                    Label("Download model (~1.5 GB)", systemImage: "arrow.down.circle")
+                    Label("Download model (~2.3 GB)", systemImage: "arrow.down.circle")
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -136,9 +144,17 @@ struct ContentView: View {
 
     private func downloadModel() async {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        // The release set: int8v3 fused-kernel decode monolith (42.5-45.4 tok/s) + the q16-int8
+        // chunked-prefill companion (147 tok/s prefill). The engine runs without the prefill
+        // bundle (q=1 prefill) if its download is removed.
         await downloader.fetch(
             repo: repoURL,
-            items: [.init(remote: "ios-gpu/qwen3_5_0_8b_ios_hc0.aimodel", local: "qwen3_5_0_8b_ios_hc0.aimodel")],
+            items: [
+                .init(remote: "ios-gpu/qwen3_5_0_8b_ios_hc0_int8v3.aimodel",
+                      local: "qwen3_5_0_8b_ios_hc0_int8v3.aimodel"),
+                .init(remote: "ios-gpu/qwen3_5_0_8b_ios_hc_prefill_q16_b2048_int8.aimodel",
+                      local: "qwen3_5_0_8b_ios_hc_prefill_q16_b2048_int8.aimodel"),
+            ],
             into: docs)
         if downloader.phase == .done { await reload(cu: computeUnit) }
     }

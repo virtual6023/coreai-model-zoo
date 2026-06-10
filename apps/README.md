@@ -6,7 +6,7 @@ HF eager reference) on an iPhone 17 Pro running the iOS 27 beta:
 | App | Model | Decode (iPhone 17 Pro) |
 |---|---|---|
 | [`CoreAIChat/`](CoreAIChat/) | **Gemma 4 E2B** (text) — mmap embedding/PLE gather front-end → 35-layer core → head, GPU/ANE segmented picker | **GPU 22 tok/s** (int4-k-means kernels) / **ANE 6** (int8 chunks) |
-| [`QwenChatFast/`](QwenChatFast/) | **Qwen3.5-0.8B** (hybrid linear+full attention) — static-shape loop-free decode, host-managed KV + SSM conv/rec state | **GPU 27.7 tok/s** (fp16, ctx 2048) |
+| [`QwenChatFast/`](QwenChatFast/) | **Qwen3.5-0.8B** (hybrid linear+full attention) — static-shape loop-free decode, fused int8 Metal kernels + GPU argmax head, q16 chunked prefill, host-managed KV + SSM conv/rec state | **GPU 42.5–45.4 tok/s** decode · **147 tok/s** prefill (int8 kernels, ctx 2048; `QWEN_KIND=fp16` selects the previous fp16 path, 27.7) |
 
 Measured numbers, bundle sizes, and per-config caveats live in the zoo cards:
 [`zoo/gemma4-e2b.md`](../zoo/gemma4-e2b.md) · [`zoo/qwen3.5.md`](../zoo/qwen3.5.md).

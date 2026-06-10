@@ -14,7 +14,33 @@ struct ChatView: View {
     @State private var turns: [Turn] = []
     @State private var repoURL = ProcessInfo.processInfo.environment["GEMMA_REPO"]
         ?? Gemma4ChatEngine.defaultRepo(for: .gpu)
+    // Remembered gemma compute unit, so Gemma -> Qwen -> Gemma comes back to
+    // the unit the user had (the pipelined models have no unit choice).
+    @State private var gemmaUnit: GemmaMode = .gpu
     @FocusState private var inputFocused: Bool
+
+    // Two-level selection over the flat engine mode: model (menu) x unit
+    // (gemma-only segment).
+    private var modelSelection: Binding<ChatModel> {
+        Binding(
+            get: { engine.mode.chatModel },
+            set: { m in
+                switch m {
+                case .gemma: engine.mode = gemmaUnit
+                case .qwen: engine.mode = .qwen
+                case .lfm2: engine.mode = .lfm2
+                }
+            })
+    }
+
+    private var unitSelection: Binding<GemmaMode> {
+        Binding(
+            get: { engine.mode == .ane ? .ane : .gpu },
+            set: { u in
+                gemmaUnit = u
+                engine.mode = u
+            })
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -47,6 +73,7 @@ struct ChatView: View {
         // Raise the keyboard on launch (typing is allowed while the model loads; Send stays gated).
         .onAppear {
             inputFocused = true
+            if engine.mode == .ane { gemmaUnit = .ane }  // headless GEMMA_ENGINE=ane start
             if ProcessInfo.processInfo.environment["GEMMA_REPO"] == nil {
                 repoURL = Gemma4ChatEngine.defaultRepo(for: engine.mode)
             }
@@ -68,14 +95,24 @@ struct ChatView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Text("CoreAIChat · \(engine.mode.modelTitle)").font(.headline)
-            Spacer()
-            Picker("Model", selection: $engine.mode) {
-                ForEach(GemmaMode.allCases) { m in Text(m.rawValue).tag(m) }
+            Text("CoreAIChat").font(.headline)
+            // Model first (a menu scales as the zoo grows) ...
+            Picker("Model", selection: modelSelection) {
+                ForEach(ChatModel.allCases) { m in Text(m.rawValue).tag(m) }
             }
-            .pickerStyle(.segmented)
-            .frame(width: 240)
+            .pickerStyle(.menu)
             .disabled(engine.busy || engine.loading)
+            Spacer()
+            // ... then the compute unit, only where there is a choice (gemma).
+            if engine.mode.chatModel == .gemma {
+                Picker("Compute", selection: unitSelection) {
+                    Text("GPU").tag(GemmaMode.gpu)
+                    Text("ANE").tag(GemmaMode.ane)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 104)
+                .disabled(engine.busy || engine.loading)
+            }
             Text(engine.status)
                 .font(.caption).foregroundStyle(engine.ready ? .green : .secondary)
                 .lineLimit(1)
@@ -136,7 +173,7 @@ struct ChatView: View {
 
     private func downloadPanel(_ items: [ModelDownloader.Item]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("\(engine.mode.rawValue) model files not on device (\(items.count))")
+            Text("\(engine.mode.downloadLabel) model files not on device (\(items.count))")
                 .font(.subheadline).fontWeight(.semibold)
             TextField("Hugging Face repo URL", text: $repoURL)
                 .textFieldStyle(.roundedBorder).font(.caption)
@@ -162,7 +199,7 @@ struct ChatView: View {
                     case .qwen: "~1.0"
                     case .lfm2: "~1.5"
                     }
-                    Label("Download \(engine.mode.rawValue) set (\(size) GB)",
+                    Label("Download \(engine.mode.downloadLabel) set (\(size) GB)",
                           systemImage: "arrow.down.circle")
                 }
                 .buttonStyle(.borderedProminent)

@@ -35,15 +35,35 @@ protocol Gemma4Backend: AnyObject {
     func profileSummary() -> String     // per-token ms breakdown of the last generation
 }
 
+/// The MODEL level of the picker. GPU/ANE is a compute-unit toggle one level
+/// below this (gemma only — the pipelined models are GPU-only by design).
+enum ChatModel: String, CaseIterable, Identifiable {
+    case gemma = "Gemma 4 E2B", qwen = "Qwen3.5 0.8B", lfm2 = "LFM2.5 1.2B"
+    var id: String { rawValue }
+}
+
+// Engine-selection enum (model × compute unit flattened): the storage type the
+// whole engine layer is keyed on, and the headless GEMMA_ENGINE vocabulary
+// (gpu / ane / qwen / lfm2). The UI splits it into ChatModel + a gemma-only
+// GPU/ANE segment.
 enum GemmaMode: String, CaseIterable, Identifiable {
     case gpu = "GPU", ane = "ANE", qwen = "Qwen", lfm2 = "LFM"
     var id: String { rawValue }
-    /// Model title shown in the header for this mode.
-    var modelTitle: String {
+    /// The model family this engine mode belongs to (the picker's top level).
+    var chatModel: ChatModel {
         switch self {
+        case .gpu, .ane: .gemma
+        case .qwen: .qwen
+        case .lfm2: .lfm2
+        }
+    }
+    /// User-facing label for the download panel (model, plus unit where it matters).
+    var downloadLabel: String {
+        switch self {
+        case .gpu: "Gemma 4 E2B · GPU"
+        case .ane: "Gemma 4 E2B · ANE"
         case .qwen: "Qwen3.5 0.8B"
         case .lfm2: "LFM2.5 1.2B"
-        case .gpu, .ane: "Gemma 4 E2B"
         }
     }
     /// Non-nil for the modes that ride the coreai-pipelined engine.

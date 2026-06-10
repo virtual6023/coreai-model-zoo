@@ -9,6 +9,7 @@ on-device, with the conversion code and a knowledge base. Successor to
 | Model | Download (`.aimodel`) | License |
 |---|---|---|
 | **Qwen3.5-0.8B** | [🤗 qwen3.5-0.8B-CoreAI](https://huggingface.co/mlboydaisuke/qwen3.5-0.8B-CoreAI) | Apache-2.0 |
+| **Qwen3.5-2B** | [🤗 qwen3.5-2B-CoreAI](https://huggingface.co/mlboydaisuke/qwen3.5-2B-CoreAI) | Apache-2.0 |
 | **Gemma 4 E2B** (text) | [🤗 gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI) | Gemma |
 | **LFM2.5-1.2B-Instruct** | [🤗 LFM2.5-1.2B-CoreAI](https://huggingface.co/mlboydaisuke/LFM2.5-1.2B-CoreAI) | LFM Open License v1.0 |
 | **Granite 4.0-H 1B / 350M** | HF upload pending — convert locally via [`conversion/`](conversion/) | Apache-2.0 |

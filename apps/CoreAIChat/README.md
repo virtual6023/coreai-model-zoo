@@ -8,7 +8,7 @@ the HF eager reference) on an iPhone 17 Pro running the iOS 27 beta:
   KV + SSM conv/rec), loop-free single-step decode. **GPU 27.7 tok/s (static, ctx 2048) /
   ANE 14.7 (dynamic).**
 - **Gemma 4 E2B** (text decoder) — 3-stage flow: mmap embedding/PLE gather front-end → decode
-  core → head. **GPU 17.7 tok/s (int4-k-means custom-kernel monolith) / ANE ~6 (int8 chunks).**
+  core → head. **GPU 22 tok/s (int4-k-means custom-kernel monolith) / ANE 6 (int8 chunks).**
 
 Measured numbers, bundle sizes, and per-config caveats live in the zoo cards:
 [`zoo/qwen3.5.md`](../../zoo/qwen3.5.md) · [`zoo/gemma4-e2b.md`](../../zoo/gemma4-e2b.md).
@@ -21,8 +21,12 @@ Measured numbers, bundle sizes, and per-config caveats live in the zoo cards:
    - Runner: `CoreAIRunner.HybridCoreAIEngine` driving the stateful `.aimodel`
      (states are function-local `inout` — class-property state trips MutableViews lifetime checks).
    - Tokenizer: swift-transformers, bundled offline.
-   - Model delivery: push the `.aimodel` bundle into the app sandbox
-     (`xcrun devicectl device copy to --domain-type appDataContainer`) — not bundled in the .app.
+   - Model delivery: **in-app download from the Hugging Face repos above** (editable URL field;
+     files stream into a staging dir and each bundle is renamed into place only when complete —
+     Core AI's specialization cache is content-keyed, and a partially-present bundle poisons it).
+     Weights are NOT bundled into the .app (GB-class; Apple's guidance for large models is
+     download-then-specialize off the interactive flow — WWDC26 326). For development iteration
+     you can still sideload: `xcrun devicectl device copy to --domain-type appDataContainer`.
 3. **Build + deploy** (Xcode 27 beta):
    ```bash
    export DEVELOPER_DIR=/path/to/Xcode-beta.app/Contents/Developer

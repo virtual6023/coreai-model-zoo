@@ -101,15 +101,24 @@ the interactive flow. Subsequent inferences use the cached specialized asset.
   The un-chunked **35-layer monolith** (`gemma4_e2b_hostcache_L35_int8.aimodel`, 1.8 GB = the size class
   whose on-device ANE first-run compile jetsam'd) compiled `--platform iOS --preferred-compute
   neural-engine --architecture h18p` (EXIT 0, ~4.0 GB host RSS; the `.aimodelc` embeds a pre-compiled
-  MPSGraph executable) **loads on the iPhone 17 Pro with `cu=ane` in 6.5 s, NO jetsam** (avail
-  6130→2809 MB). So the chunk-forcing constraint is gone at load time. Two caveats, both open:
-  (1) **EXECUTE on the ANE is unproven** — the first q=1 step of that artifact stalled >9 min; note the
-  tested monolith is the macOS-COMPOSITE authoring, not the fp16-hardened iOS-primitive authoring
-  (Conv2d 1×1 + LayerNorm-trick RMSNorm) the working ANE chunks use — re-test with an AOT'd
-  iOS-primitive monolith once the ANE lane resumes; (2) the compile emits an MPSGraph delegate even
-  with `neural-engine` preferred. For comparison, the **GPU** int4-kernel monolith `.aimodelc` (1.9 GB)
-  cold-loads + runs a full 27-step verify inside a 240 s window, and **warm-loads in 0.0 s** —
-  vs the plain `.aimodel`, whose on-device first-load specialize ran past a 300 s timeout.
+  MPSGraph executable) **loads on the iPhone 17 Pro with `cu=ane` in 6.5–8.1 s, NO jetsam** (avail
+  6130→~2810 MB; two independent sessions). So the chunk-forcing constraint is gone at load time.
+  **But EXECUTE is where it now dies (2nd measurement, picker session): the first inference step is
+  jetsam-SIGKILLed** — load ✅ / run ❌. The load leaves only ~2.8 GB headroom (the GPU path leaves
+  ~6.0 GB for the same-size core) and the first-step working set blows through it. Open levers:
+  (1) drop the co-resident GPU head-argmax kernel (that test paired the ANE core with the GPU head) —
+  retry with the on-ANE argmax head; (2) the tested monolith is the macOS-COMPOSITE authoring, not the
+  fp16-hardened iOS-primitive authoring (Conv2d 1×1 + LayerNorm-trick RMSNorm) the working ANE chunks
+  use — re-author + re-test; (3) the compile emits an MPSGraph delegate even with `neural-engine`
+  preferred. For comparison, the **GPU** monoliths fully work AOT'd: the int4-kernel `.aimodelc`
+  (1.9 GB) cold-loads + verifies 8/8; the int8-kernel `.aimodelc` measured a clean first-load A/B —
+  **4.9 s vs 19.2 s for the plain `.aimodel`'s true-cold specialize (~4×; post cache-wipe), warm 0.0 s
+  both** (the OS cache serves `.aimodelc` too).
+- ❌ **The 6 host-cache chunk graphs CANNOT be AOT-compiled — `coreai-build` itself SIGSEGVs** (host-side
+  `ANECompilerOffline::~ANECompilerOffline → objc_release`, inside MPSGraph's `anePreCompileBinary`;
+  ~0.9 s in, all 6 chunks, both archs; the L35 monolith from the same authoring compiles fine — beta
+  compiler bug, size/shape-correlated). So the chunked-ANE path gets **no AOT first-load relief**; AOT
+  applies to monolith artifacts only for now.
 - **int4 head differs BY compute unit (resolved):** k-means palettization is `F.linear`-only, so the GPU
   int4-class head = a **fused-int8 Metal kernel** (GPU-only, [`custom-metal-kernels.md`](custom-metal-kernels.md)).
   The **ANE** can't run that MSL → its low-bit head path is **int4 per-output-channel *quantization* on a

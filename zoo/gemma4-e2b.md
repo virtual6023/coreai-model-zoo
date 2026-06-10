@@ -53,8 +53,12 @@ proportional), final logit softcap `tanh(z/30)·30`. RMSNorm multiplies by `weig
    LayerNorm trick; `nn.Linear` accumulates fp16 → Conv2d 1×1 (fp32 MAC on the conv engine).
    `.float()` casts are no-ops on the ANE.
 4. **Chunking for the ANE** — the 35-layer monolith OOMs the on-device first-run compile →
-   6 chunks (≤8 layers). AOT compilation (`xcrun coreai-build compile`) moves that compile
-   off-device and likely un-chunks it; device proof pending
+   6 chunks (≤8 layers, **bucket/ctx 64**; a bucket-512 re-export passes on the Mac but its
+   on-device first ANE compile still jetsams — long-ANE-ctx waits on the levers below). AOT
+   (`xcrun coreai-build compile`) was measured as the un-chunk lever: the un-chunked `.aimodelc`
+   now **loads on the device ANE (no compile-OOM)** but is jetsam'd at the first inference —
+   load ✅ / run ❌ — and the chunk graphs themselves SIGSEGV the AOT compiler (beta bug), so the
+   shipped ANE set stays chunked
    ([`../knowledge/aot-and-specialization.md`](../knowledge/aot-and-specialization.md)).
 
 ## Conversion status (macOS, vs HF eager — 8-token canonical prompt)

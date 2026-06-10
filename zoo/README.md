@@ -1,13 +1,14 @@
 # Zoo — Core AI converted models
 
-Model cards for models converted to Core AI `.aimodel`. **Weights/bundles are not committed**
-(too large); each card links the source checkpoint and the `conversion/` script to reproduce, plus
-the verified parity numbers, on-device sizes, and measured on-device throughput.
+Model cards for models converted to Core AI `.aimodel`. **Ready-to-run bundles are on Hugging
+Face** (one best verified configuration per platform × compute unit); each card also links the
+source checkpoint and the `conversion/` script, plus parity numbers, sizes, and measured
+throughput.
 
-| Card | Family | Status |
-|---|---|---|
-| [`qwen3.5.md`](qwen3.5.md) | Qwen3.5 (hybrid linear+full attn) | 0.8B + 2B, top-1 exact vs HF; **iPhone 17 Pro GPU 27.7 tok/s (static, ctx 2048) / ANE 14.7 (dynamic) + Mac GPU 58.5** |
-| [`gemma4-e2b.md`](gemma4-e2b.md) | Gemma 4 (multimodal; text decoder) | HF 8/8 exact; **runs on iPhone 17 Pro (GPU + ANE) + Mac GPU ~57 tok/s** (custom Metal kernels) |
+| Card | Family | Download | Status |
+|---|---|---|---|
+| [`qwen3.5.md`](qwen3.5.md) | Qwen3.5 (hybrid linear+full attn) | [🤗 qwen3.5-0.8B-CoreAI](https://huggingface.co/mlboydaisuke/qwen3.5-0.8B-CoreAI) | 0.8B + 2B, top-1 exact vs HF |
+| [`gemma4-e2b.md`](gemma4-e2b.md) | Gemma 4 (multimodal; text decoder) | [🤗 gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI) | 8/8 exact vs HF |
 
 ## The matrix (every meaningful platform × compute-unit cell, greedy, top-1 vs HF)
 

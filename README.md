@@ -4,6 +4,11 @@ LLMs converted to Apple **Core AI** (`.aimodel`, iOS 27 / macOS 27) — download
 on-device, with the conversion code and a knowledge base. Successor to
 [`CoreML-Models`](https://github.com/john-rocky/CoreML-Models).
 
+<p align="center">
+  <img width="380" alt="CoreAIChat screen recording" src="https://github.com/user-attachments/assets/999dbd95-45b5-468f-b1a8-34112ee3b74d" />
+</p>
+<p align="center"><i>CoreAIChat (<a href="apps/">apps/</a>) — the zoo's models running on-device on iPhone.</i></p>
+
 ## Models
 
 | Model | Download (`.aimodel`) | License |

@@ -8,6 +8,12 @@ shared SwiGLU MLP 4096, vocab 100 352, tied head, mup-style scalar multipliers
 (embedding ×12, residual ×0.22, logits ÷6). The 350m: 32 layers = 28 + 4, hidden 768.
 Source: `ibm-granite/granite-4.0-h-1b`, `ibm-granite/granite-4.0-h-350m`.
 
+**⬇️ Converted `.aimodel` bundles (ready to run):
+[mlboydaisuke/granite-4.0-h-CoreAI](https://huggingface.co/mlboydaisuke/granite-4.0-h-CoreAI)** —
+`gpu-pipelined/granite_4_0_h_1b_decode_int8lin/` (the ship config, Mac + iPhone) +
+`gpu-pipelined/granite_4_0_h_350m_decode_fp16/` (full LanguageBundles incl. tokenizer;
+Apache-2.0 LICENSE included).
+
 **The first SSM-scan architecture on the [pipelined-engine fast path](../knowledge/pipelined-engine.md).**
 The enabler is the same observation that unlocked qwen3.5's GDN: **at S=1 the Mamba2
 selective scan is a single recurrence step** (`state = state*dA + dt*B*x;
@@ -25,6 +31,7 @@ shows no fp16-matmul amplification; the SSM step itself computes in fp32 in-grap
 | config | bundle | prefill tok/s | decode tok/s | numerics |
 |---|---:|---:|---:|---|
 | **1b int8 linear per-block-32 (ship)** | **1.6 GB** | **136.7** | **136.5** | **16/16 oracle gate + HF-seeded decode step — on a margin-clean oracle (min top-2 margin 0.137, decode 2.53)** |
+| **1b int8lin, iPhone 17 Pro** (PipelinedBench, n=2×2) | 1.6 GB | 30.1–32.2 | **30.8 avg r1 (26.4–31.3)** | **nat 24/24 + oracle 24/24 on BOTH runs — token-identical to the M4 Max GPU sequences** |
 | 1b fp16 (control) | 2.8 GB | 103.7 | 103.6 | 16/16 oracle gate + decode step |
 | 350m fp16 (ship at this size) | 0.66 GB | 193.2 | 191.1 | 16/16 oracle gate + decode step; engine path ≡ torch 24/24 greedy ×2 prompts; `llm-runner` 217.9 tok/s short-run |
 | 350m int8 (lin/b8/sel/mix) | — | — | 185.8–186.6 | **not shipped**: gate FAILs *and* no speed win (see below) |
@@ -34,8 +41,13 @@ shows no fp16-matmul amplification; the SSM step itself computes in fp32 in-grap
   int8 made it *slower* (185.8 vs 191.1) — at ~0.7 GB/token the GPU isn't waiting on
   weights, so dequant work is pure cost. Ship rule of thumb: quantize for speed only
   when the model is big enough to be bandwidth-bound on your device.
-- iPhone: not yet measured. Naive ceiling for the 1b int8lin ≈ 60 GB/s ÷ 1.6 GB ≈ 37 tok/s
-  (LFM2.5 realized ~87% of its ceiling on an iPhone 17 Pro, qwen-0.8B ~60%).
+- **iPhone: ~31 tok/s ≈ ~84% of the naive BW ceiling** (~60 GB/s ÷ 1.6 GB ≈ 37) — like
+  LFM2.5 (~87%), the device is effectively memory-bandwidth saturated; the SSM scan costs
+  nothing extra at S=1. Cold GPU specialization 5.7 s / warm load 1.9 s (no AOT needed,
+  no increased-memory entitlement issue at 1.6 GB). One trial dipped to 26.4 decode
+  (install-adjacent/thermal — the knowledge-page caveat); typical trials 30.2–31.3.
+  Cross-device determinism held again: all four numerics checks (2 runs × 2 prompts)
+  were 24/24 token-identical to the M4 Max GPU rollouts.
 
 ## Why the 350m int8 gate fails (and why that's two separate findings)
 

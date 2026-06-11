@@ -205,6 +205,8 @@ Suggested additions when integrating:
 
 1. Knowledge index: add `apple-models-bench.md — measured numbers for Apple's official
    recipes (M4 Max + iPhone 17 Pro), Core AI vs MLX, GPU vs ANE` to the knowledge list.
+1b. Repository layout + Models section: add a line for **`official/` — Apple's
+   official-recipe models, pre-converted & measured, hosted on HF** (official/README.md).
 2. Apps section: link the dedicated samples repo `github.com/john-rocky/coreai-samples`
    (CoreAIChatMac moved there; zoo apps/ keeps the model-specific apps + engine patches).
 3. Headline numbers for the README top (if wanted): gpt-oss-20b 78 tok/s on M4 Max /

@@ -19,6 +19,7 @@
 
 import CoreAI
 import CoreAIShared
+import CoreGraphics
 import Foundation
 import Tokenizers
 
@@ -40,7 +41,7 @@ protocol Gemma4Backend: AnyObject {
 /// below this (gemma only — the pipelined models are GPU-only by design).
 enum ChatModel: String, CaseIterable, Identifiable {
     case gemma = "Gemma 4 E2B", qwen = "Qwen3.5 0.8B", qwen2b = "Qwen3.5 2B",
-         lfm2 = "LFM2.5 1.2B", granite = "Granite 1B"
+         lfm2 = "LFM2.5 1.2B", granite = "Granite 1B", qwen3vl = "Qwen3-VL 2B"
     var id: String { rawValue }
 }
 
@@ -50,7 +51,7 @@ enum ChatModel: String, CaseIterable, Identifiable {
 // into ChatModel + a gemma-only GPU/ANE/⚡ segment.
 enum GemmaMode: String, CaseIterable, Identifiable {
     case gpu = "GPU", ane = "ANE", gemmaTbl = "Gemma⚡", qwen = "Qwen",
-         qwen2b = "Qwen2B", lfm2 = "LFM", granite = "Granite"
+         qwen2b = "Qwen2B", lfm2 = "LFM", granite = "Granite", qwen3vl = "Qwen3VL"
     var id: String { rawValue }
     /// The model family this engine mode belongs to (the picker's top level).
     var chatModel: ChatModel {
@@ -60,6 +61,7 @@ enum GemmaMode: String, CaseIterable, Identifiable {
         case .qwen2b: .qwen2b
         case .lfm2: .lfm2
         case .granite: .granite
+        case .qwen3vl: .qwen3vl
         }
     }
     /// User-facing label for the download panel (model, plus unit where it matters).
@@ -72,6 +74,7 @@ enum GemmaMode: String, CaseIterable, Identifiable {
         case .qwen2b: "Qwen3.5 2B"
         case .lfm2: "LFM2.5 1.2B"
         case .granite: "Granite 4.0-H 1B"
+        case .qwen3vl: "Qwen3-VL 2B (vision)"
         }
     }
     /// Non-nil for the modes that ride the coreai-pipelined engine.
@@ -82,7 +85,7 @@ enum GemmaMode: String, CaseIterable, Identifiable {
         case .qwen2b: PipelinedBackend.qwen2b
         case .lfm2: PipelinedBackend.lfm2
         case .granite: PipelinedBackend.granite
-        case .gpu, .ane: nil
+        case .gpu, .ane, .qwen3vl: nil  // qwen3vl drives its own backend
         }
     }
 }
@@ -99,6 +102,8 @@ final class Gemma4ChatEngine: ObservableObject {
 
     private var backend: Gemma4Backend?
     private var pipelined: PipelinedBackend?  // .qwen / .lfm2 (pipelined engine, own loop)
+    private var vl: Qwen3VLBackend?           // .qwen3vl (pipelined engine + vision tower)
+    @Published var vlImageAttached = false
     private var loadedMode: GemmaMode?  // mode the current backend was loaded for
     private var tokenizer: Tokenizer!
     private let EOT = 106               // gemma <end_of_turn>
@@ -112,6 +117,7 @@ final class Gemma4ChatEngine: ObservableObject {
         case "qwen2b": mode = .qwen2b
         case "lfm2", "lfm": mode = .lfm2
         case "granite": mode = .granite
+        case "qwen3vl", "vl": mode = .qwen3vl
         default: mode = .gpu
         }
     }
@@ -129,6 +135,7 @@ final class Gemma4ChatEngine: ObservableObject {
         case .qwen2b: "https://huggingface.co/mlboydaisuke/qwen3.5-2B-CoreAI"
         case .lfm2: "https://huggingface.co/mlboydaisuke/LFM2.5-1.2B-CoreAI"
         case .granite: "https://huggingface.co/mlboydaisuke/granite-4.0-h-CoreAI"
+        case .qwen3vl: "https://huggingface.co/mlboydaisuke/Qwen3-VL-2B-CoreAI"
         case .gpu, .ane, .gemmaTbl: "https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI"
         }
     }
@@ -143,6 +150,9 @@ final class Gemma4ChatEngine: ObservableObject {
         case .qwen, .qwen2b, .lfm2, .granite:
             let spec = mode.pipelinedSpec!
             paths = [(spec.hfRemotePath, spec.bundleName)]
+        case .qwen3vl:
+            paths = [(Qwen3VLBackend.hfDecoderPath, Qwen3VLBackend.decoderBundle),
+                     (Qwen3VLBackend.hfVisionPath, Qwen3VLBackend.visionDir)]
         case .gemmaTbl:
             // AOT engine bundle + the PLE table set the GPU/ANE modes already share.
             let spec = mode.pipelinedSpec!
@@ -174,11 +184,19 @@ final class Gemma4ChatEngine: ObservableObject {
         loading = true; ready = false
         status = "loading \(mode.rawValue) engine…"
         // Free the previous mode's models BEFORE loading the next set (jetsam headroom).
-        backend = nil; pipelined?.unload(); pipelined = nil; loadedMode = nil
+        backend = nil; pipelined?.unload(); pipelined = nil
+        vl?.unload(); vl = nil; vlImageAttached = false; loadedMode = nil
         let target = mode
         do {
             let tLoad = Date()
-            if let spec = target.pipelinedSpec {
+            if target == .qwen3vl {
+                let b = Qwen3VLBackend()
+                try await b.load()
+                vl = b
+                loadedMode = target
+                ready = true
+                status = "\(Qwen3VLBackend.label) ready · ctx \(b.ctx)"
+            } else if let spec = target.pipelinedSpec {
                 let pb = PipelinedBackend(spec: spec)
                 try await pb.load()
                 pipelined = pb
@@ -215,6 +233,10 @@ final class Gemma4ChatEngine: ObservableObject {
     // q1 prefill (head only at the last prompt position) + greedy decode, streamed to `output`.
     func generate(_ prompt: String, maxNew: Int? = nil) async {
         guard ready, !busy else { return }
+        if mode == .qwen3vl {
+            await generateVL(prompt, maxNew: maxNew)
+            return
+        }
         if mode.pipelinedSpec != nil {
             await generatePipelined(prompt, maxNew: maxNew)
             return
@@ -278,6 +300,40 @@ final class Gemma4ChatEngine: ObservableObject {
         } catch {
             output = "generation error: \(error.localizedDescription)"
         }
+    }
+
+    private func generateVL(_ prompt: String, maxNew: Int?) async {
+        guard let vl else { return }
+        busy = true; output = ""; stats = ""
+        defer { busy = false }
+        do {
+            let st = try await vl.generate(prompt, maxNew: maxNew ?? 1024) { [weak self] text in
+                self?.output = text
+            }
+            stats = st.summary
+        } catch {
+            output = "generation error: \(error.localizedDescription)"
+        }
+    }
+
+    /// Attach a picked photo to the VL conversation (runs the vision tower once).
+    func attachVLImage(_ cgImage: CGImage) async {
+        guard let vl, ready else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            try await vl.attach(cgImage: cgImage)
+            vlImageAttached = true
+            status = "\(Qwen3VLBackend.label) ready · image attached"
+        } catch {
+            status = "image attach failed: \(error.localizedDescription)"
+        }
+    }
+
+    func detachVLImage() {
+        vl?.detachImage()
+        vlImageAttached = false
+        status = "\(Qwen3VLBackend.label) ready · ctx \(vl?.ctx ?? 4096)"
     }
 
     // HF-greedy oracle ("Count from one to ten") through the CURRENT release backend -> match n/8.

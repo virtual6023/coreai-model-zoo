@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 struct Turn: Identifiable {
@@ -5,6 +6,7 @@ struct Turn: Identifiable {
     let role: String      // "user" | "model"
     var text: String
     var stats: String = ""
+    var image: UIImage? = nil
 }
 
 struct ChatView: View {
@@ -18,6 +20,8 @@ struct ChatView: View {
     // the unit the user had (the pipelined models have no unit choice).
     @State private var gemmaUnit: GemmaMode = .gpu
     @FocusState private var inputFocused: Bool
+    @State private var photoItem: PhotosPickerItem?
+    @State private var attachedThumb: UIImage?
 
     // Two-level selection over the flat engine mode: model (menu) x unit
     // (gemma-only segment).
@@ -31,6 +35,7 @@ struct ChatView: View {
                 case .qwen2b: engine.mode = .qwen2b
                 case .lfm2: engine.mode = .lfm2
                 case .granite: engine.mode = .granite
+                case .qwen3vl: engine.mode = .qwen3vl
                 }
             })
     }
@@ -73,6 +78,7 @@ struct ChatView: View {
         // Mode switch (gemma GPU monolith / ANE chunks / ⚡tbl, or a pipelined model): point the
         // download field at that mode's HF repo (unless GEMMA_REPO pins it) and reload.
         .onChange(of: engine.mode) { _, m in
+            if m != .qwen3vl { photoItem = nil; attachedThumb = nil }
             if ProcessInfo.processInfo.environment["GEMMA_REPO"] == nil {
                 repoURL = Gemma4ChatEngine.defaultRepo(for: m)
             }
@@ -136,13 +142,22 @@ struct ChatView: View {
     private func bubble(_ turn: Turn) -> some View {
         HStack {
             if turn.role == "user" { Spacer(minLength: 40) }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(turn.text.isEmpty ? " " : turn.text)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 14).padding(.vertical, 9)
-                    .foregroundStyle(turn.role == "user" ? .white : .primary)
-                    .background(turn.role == "user" ? Color.accentColor : Color(.systemGray6))
-                    .clipShape(RoundedRectangle(cornerRadius: 18))
+            VStack(alignment: turn.role == "user" ? .trailing : .leading, spacing: 4) {
+                if let image = turn.image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxHeight: 340)
+                        .clipShape(RoundedRectangle(cornerRadius: 18))
+                }
+                if turn.image == nil || !turn.text.isEmpty {
+                    Text(turn.text.isEmpty ? " " : turn.text)
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 14).padding(.vertical, 9)
+                        .foregroundStyle(turn.role == "user" ? .white : .primary)
+                        .background(turn.role == "user" ? Color.accentColor : Color(.systemGray6))
+                        .clipShape(RoundedRectangle(cornerRadius: 18))
+                }
                 if !turn.stats.isEmpty {
                     Text(turn.stats).font(.caption2).foregroundStyle(.secondary)
                 }
@@ -153,6 +168,35 @@ struct ChatView: View {
 
     private var inputBar: some View {
         HStack(alignment: .bottom, spacing: 8) {
+            if engine.mode == .qwen3vl {
+                PhotosPicker(selection: $photoItem, matching: .images) {
+                    if let attachedThumb {
+                        Image(uiImage: attachedThumb)
+                            .resizable().scaledToFill()
+                            .frame(width: 34, height: 34)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .overlay(alignment: .topTrailing) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 12)).foregroundStyle(.green)
+                            }
+                    } else {
+                        Image(systemName: "photo.badge.plus").font(.system(size: 24))
+                    }
+                }
+                .disabled(!engine.ready || engine.busy)
+                .padding(.bottom, 6)
+                .onChange(of: photoItem) { item in
+                    guard let item else { return }
+                    Task {
+                        if let data = try? await item.loadTransferable(type: Data.self),
+                           let ui = UIImage(data: data), let cg = ui.cgImage {
+                            attachedThumb = ui
+                            turns.append(Turn(role: "user", text: "", image: ui))
+                            await engine.attachVLImage(cg)
+                        }
+                    }
+                }
+            }
             TextField("Message", text: $input, axis: .vertical)
                 .lineLimit(1...4)
                 .focused($inputFocused)
@@ -212,6 +256,7 @@ struct ChatView: View {
                     case .qwen2b: "~2.4"
                     case .lfm2: "~1.5"
                     case .granite: "~1.2"
+                    case .qwen3vl: "~3.1"
                     }
                     Label("Download \(engine.mode.downloadLabel) set (\(size) GB)",
                           systemImage: "arrow.down.circle")

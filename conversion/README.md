@@ -70,6 +70,14 @@ overlay** of that package. Concretely, the additions are:
   tok/s — int8 fails the gate at that scale and is no faster). Model overlay:
   `models/macos/granite4h.py`. Same engine patch + `COREAI_CHUNK_THRESHOLD=1` run contract.
   See [`../zoo/granite-4.0-h.md`](../zoo/granite-4.0-h.md).
+- **Qwen3-VL 2B pipelined — the first VLM (in this dir): `export_qwen3_vl_pipelined.py [fp16|int8lin|int8hu]`** —
+  emits the text-decoder bundle (+ a `_s1` static-query twin that carries the python
+  oracle gates) AND the fixed-grid vision encoder `.aimodel`. Multimodal state rides the
+  static-inputs patch: image/deepstack embeds as rewritable owned buffers, image tokens
+  as extension ids `V+slot`, interleaved M-RoPE derived in-graph from (ids, pos) + two
+  `[1] i32` shift inputs. int8hu **187.6 tok/s decode** on M4 Max, multimodal oracle
+  gates 4/4+16/16+HF-seeded vs fp32-HF; iPhone numerics 24/24 (text AND image prompts).
+  Model overlay: `models/macos/qwen3_vl.py`. See [`../zoo/qwen3-vl.md`](../zoo/qwen3-vl.md).
 
 ## Reproduce (env)
 

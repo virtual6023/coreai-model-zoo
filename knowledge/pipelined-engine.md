@@ -308,6 +308,36 @@ the ship config is **~1.6× with zero custom kernels**, and the same bundle runs
 at 210. CoreAIChat downloads the ship bundle since 2026-06-11 (chat-surface decode
 62.3–67.0 vs the int8lin default's 47.9, +30–40%).
 
+## VLM rider: Qwen3-VL (the id-space trick)
+
+A text-only engine can carry a full VLM without engine changes — proven by
+Qwen3-VL 2B (zoo/qwen3-vl.md, 187.6 tok/s M4 Max, iPhone numerics 24/24):
+
+- **Vision tower = a separate plain `.aimodel`** run once per image; at a
+  fixed grid every positional computation (pos-embed interpolation, 2D
+  rotary) bakes into constants.
+- **Image embeddings ride the static-input hook** as rewritable owned
+  buffers (~3 MB); the host rewrites `<|image_pad|>` ids to extension ids
+  `V + slot`, and the graph selects `table[ids]` vs `image_embeds[ids-V]`
+  per token. DeepStack adds gather the same way at decoder layers 0-2.
+- **Interleaved M-RoPE needs NO position plumbing**: image tokens
+  self-locate from (ids, pos) — slot = ids-V, image start s0 = pos-slot,
+  (t,h,w) = (s0, s0+slot//W, s0+slot%W) — and post-image text uses
+  pos - shift with shift = amount·(pos ≥ start), two [1] i32 static inputs.
+  The interleave itself is three constant 0/1 masks over head_dim mixing
+  three standard RoPE composite calls (per-frequency-pair selection is a
+  valid rotation). Text tokens have t=h=w, so the same graph IS a plain
+  text LLM when the embeds are zero and start = 1<<30.
+- Pure-attention backbones need NO extra states — the engine's native KV
+  pair suffices; only the static-inputs patch is required.
+
+Caveats from this port: the engine pads scalar [1] i32 static inputs to a
+64-byte minimum buffer; a dynamic-query (`input_ids [1,s]`) twin exports and
+gates in torch but crashes the engine at generate on the macOS-27 beta
+(`NSArrayM nil insert`) — ship S=1 static and treat chunked prefill as a
+future lever; the python runtime cannot execute dynamic-shaped-output graphs
+at all (gate via a static-S=1 twin bundle).
+
 ## What fits next / what doesn't
 
 - **Fits with zero engine work**: pure transformers ≤~4B (KV-only states) — stock engine, no

@@ -22,7 +22,7 @@ on-device, with the conversion code and a knowledge base. Successor to
 | **Qwen3.5-2B** | **28–30 tok/s**<br><sub>int8 + per-channel absmax int8 head · ≥ CoreML-2B (~27) · 24/24 ≡ Mac-GPU (needs the increased-memory entitlement)</sub> | — | **161 tok/s**<br><sub>int8 + per-channel absmax int8 head · loop-free × pipelined engine (fp16-head int8lin: 127)</sub> |
 | **LFM2.5-1.2B** | **38.0–39.6 tok/s**<br><sub>int8 linear · pipelined engine (~87% of naive BW ceiling; 24/24 ≡ Mac-GPU)</sub> | — | **253 tok/s**<br><sub>int8 linear · pipelined engine — first non-Qwen rider (fp16: 162)</sub> |
 | **Granite 4.0-H 1B** | **30.2–31.3 tok/s**<br><sub>int8 linear · pipelined engine (~84% of naive BW ceiling; 24/24 ≡ Mac-GPU)</sub> | — | **136.5 tok/s**<br><sub>int8 linear · pipelined engine — first Mamba2 SSM rider (fp16: 103.6; 350m fp16: 191)</sub> |
-| **Gemma 4 E2B** | **26.5 tok/s**<br><sub>int4 linear · pipelined engine, per-token PLE provider, AOT · prefill 40.5 (kernel monolith: 22)</sub> | **6 tok/s**<br><sub>int8 · 6 chunks</sub> | **77.0 tok/s**<br><sub>int4 linear · pipelined engine, PLE table as static graph input (int8 kernel CLI: 56.6–59)</sub> |
+| **Gemma 4 E2B** | **30.3 tok/s**<br><sub>int4 linear · pipelined engine, PLE table as static graph input, AOT · prefill 38.9 (per-token provider: 26.5 / 40.5 · kernel monolith: 22)</sub> | **6 tok/s**<br><sub>int8 · 6 chunks</sub> | **77.0 tok/s**<br><sub>int4 linear · pipelined engine, PLE table as static graph input (int8 kernel CLI: 56.6–59)</sub> |
 
 Measured on the iOS 27 / macOS 27 beta. Sizes, configurations, and caveats: [`zoo/`](zoo/).
 

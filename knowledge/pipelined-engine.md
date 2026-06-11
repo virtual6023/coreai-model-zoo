@@ -84,7 +84,11 @@ AI's. The official engine is ~2× **faster** than MLX on the same machine (qwen3
   gives an entitled app ~6.4 GB and the gemma4 trials peak ~2 GB above the table bytes) and
   ship the `increased-memory-limit` entitlement. Every statically-bound byte pays the iPhone
   per-encode tax, so bind ONLY what cannot live in-graph (gemma4: the PLE table — moving the
-  0.8 GB embed table out as a 3rd input measured strictly worse).
+  0.8 GB embed table out as a 3rd input measured strictly worse). Outcome on gemma4-E2B
+  (owned buffers, AOT h18p, settled device): **iPhone decode 30.3 / prefill 38.9 vs the
+  per-token provider's 26.5 / 40.5 — decode +14%, prefill ≈ par** (M4 Max: 77.0 / 87.1 =
+  +8.6% decode). One more measurement rule on top of the install-adjacent one: a
+  just-unlocked iPhone under-reads ~35% (19.8 vs 30.3 ten minutes apart) — bench settled.
 
 ## The export trick: decode-only, loop-free
 

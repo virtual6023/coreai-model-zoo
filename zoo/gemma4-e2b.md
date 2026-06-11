@@ -46,15 +46,19 @@ engine patches in [`../apps/`](../apps/), full method + traps in
 
 | config (int4-linear weights, oracle 8/8 everywhere) | M4 Max decode / prefill | iPhone 17 Pro decode / prefill |
 |---|---|---|
-| `int4lin` — PLE rows as a **per-token input** (host mmap provider) | 70.9 / 85.3 | **26.5 / 40.5** (AOT h18p) |
-| `int4lin --tbl` — PLE table as a **static graph input** (in-graph gather) | **77.0 / 87.1** | ~27–31 / ~27–32 (AOT h18p, owned buffers + memory entitlement) |
+| `int4lin` — PLE rows as a **per-token input** (host mmap provider) | 70.9 / 85.3 | 26.5 / **40.5** (AOT h18p) |
+| `int4lin --tbl` — PLE table as a **static graph input** (in-graph gather) | **77.0 / 87.1** | **30.3 / 38.9** (AOT h18p, owned buffers + memory entitlement) |
 
-- **Mac: `--tbl` is the best gemma4 config we have** (+30–36% over the kernel CLI above; the
-  decode-vs-prefill gap closes because no token ever round-trips to the CPU).
-- **iPhone: the provider config stays the recommendation** — every statically-bound GB pays a
-  per-encode residency tax on iOS (~5–10 ms/step owned, more for mmap), which buys ~+15%
-  decode but costs ~20% prefill; details and the buffer-mode trap table in the knowledge page.
-- Both still beat the kernel monolith row above on device (22–24), with on-device KV growth
+- **`--tbl` is the fastest decode on BOTH platforms** (Mac +8.6%, iPhone +14% over the
+  provider config; +30–36% over the kernel CLI above on Mac). The decode-vs-prefill gap
+  closes because no token ever round-trips to the CPU.
+- iPhone trade-offs: the static tables are 2.35 GB of OWNED (dirty) memory — needs the
+  `increased-memory-limit` entitlement (peak footprint 4.4 GB vs the ~6.4 GB entitled limit) —
+  and statically-bound bytes pay a small per-encode residency tax (prefill 38.9 vs the
+  provider's 40.5). The provider config is the lighter/steadier choice (clean mmap, no
+  entitlement). **Measure on a SETTLED device**: a just-unlocked phone under-reads ~35%
+  (19.8 vs 30.3 ten minutes apart); buffer-mode traps in the knowledge page.
+- Both beat the kernel monolith row above on device (22–24), with on-device KV growth
   and on-GPU argmax for free.
 
 ### What it took (the interesting parts)

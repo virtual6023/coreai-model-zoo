@@ -46,7 +46,12 @@ thermal, not cache state.
 | qwen3-0.6b ANE (official iOS preset) | mixed 4/8-bit static, ctx 4096 | 5,325 | **69.6** / 54.1 | 2.85 s / **0.045 s** | 1.1 GB | |
 | qwen3-0.6b GPU (macOS dynamic compiled for iOS) | `4bit` dynamic (macOS-27β artifact) | 1,519 | 57.2 / 52.5 | 1.14 s / 0.07 s | 0.47 GB | pipelined engine |
 | qwen3-0.6b GPU — **macOS-26 artifact** | same recipe, 26-era export | **5,807** | **115.1** / 90.4 | 0.90 s / 0.066 s | **0.22 GB** | **the lowering A/B on device: ~2× decode, 3.8× prefill, half the memory of the 27β artifact** |
-| qwen3-4b | mixed 4/8-bit static, ctx 4096 | TBD | TBD | TBD | TBD | |
+| qwen3-4b ANE (official iOS preset) | mixed 4/8-bit static, ctx 4096 | 546 / 462 | 13.2 / 12.2 | **194 s** / 0.46 s | 3.3 GB | 3 GB aimodelc — cold on-device specialization takes ~3 min |
+
+Protocol cross-check: the macOS-26 GPU artifact at short-chat scale (128p/128g, engine-warm)
+reproduces the previously published warm number — **184–190 tok/s** (vs 181 published;
+median of 5 = 184, later trials drop to ~125 thermally). Protocols matter: the same
+artifact measures 115 (512p/1024g) and ~184 (128p/128g).
 
 ## Vision models — GPU vs ANE (Mac + iPhone)
 

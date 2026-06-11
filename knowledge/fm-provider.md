@@ -80,11 +80,11 @@ via the bundle tokenizer, greedy default + temperature override.
 |---|---|
 | Plain chat, streaming, multi-turn | ✅ via Apple's adapter, zero code |
 | Reasoning models (`<think>`) | ✅ routed to `Transcript.reasoning` entries automatically |
-| Tool calling | ❌ in Apple's adapter (tool entries skipped, capability never declared) → ✅ with the own conformance below |
-| Guided generation (`@Generable`, schema) | ⚠️ only when `engine.supportsLogits` — **GPU-pipelined engines sample on-GPU and return `false`**, so every zoo pipelined bundle lacks `.guidedGeneration`; the sequential engine has it |
-| `session.prewarm()` | ❌ silent no-op for Core AI models (see trap 1) |
-| Usage accounting (`.updateUsage`) | ❌ not emitted yet (placeholder in Apple's adapter) |
-| KV reuse across turns | ❌ nobody implements it: every `respond` resets the engine and re-prefills the whole transcript — at S=1 ≈ decode speed on decode-only bundles, so multi-turn latency grows linearly with history |
+| Tool calling | ❌ in Apple's adapter (tool entries skipped, capability never declared) → ✅ `ZooFMProvider` (multi-call, streaming parse) |
+| Guided generation (`@Generable`, schema) | ⚠️ only when `engine.supportsLogits` — **GPU-pipelined engines sample on-GPU and return `false`**, so every zoo pipelined bundle lacks `.guidedGeneration`; the sequential engine has it. `ZooFMProvider` throws `unsupportedCapability` on schema requests |
+| `session.prewarm()` | ❌ silent no-op for Core AI models (see trap 1) → ✅ `ZooFMProvider` (real 1-token generate + reset) |
+| Usage accounting (`.updateUsage`) | ❌ placeholder in Apple's adapter → ✅ `ZooFMProvider` (per-turn, summed into `session.usage`, `cachedTokenCount` on KV reuse) |
+| KV reuse across turns | ❌ Apple's adapter resets + re-prefills everything. `ZooFMProvider` implements the append-only fast path — measured on LFM2.5-1.2B int8 (turns ended by token cap): turn 2 reused 97 cached tokens and prefilled 18, per-turn latency flat at ~0.33 s instead of growing with history. Structural limits: the engine over-generates past EOS into the cache (see note above) and thinking models' templates strip historic `<think>` blocks the cache still contains — so EOS-ended/thinking turns still reset (measured: ~2.3-2.7 s turn-2 settle on the default 512-token budget). The real fix is engine-side (stop-at-break + KV truncate) |
 
 ## Tool calling with an own conformance
 
@@ -116,8 +116,24 @@ instructions → prompt → reasoning → toolCall get_weather({"city":"Tokyo"})
              → toolOutput get_weather → response   (turn 4.6 s incl. both respond calls)
 ```
 
-A packaged SPM target for this conformance (streaming `<tool_call>` parse, multi-call,
-usage events) is planned; until then the recipe above is complete.
+This recipe is packaged as the **`ZooFMProvider`** library in this repo's
+[`swift/`](../swift/README.md) package: streaming incremental `<tool_call>`/`<think>` parse
+(tags straddling token deltas are caught; text streams the moment it decodes), multi-call
+turns (consecutive `.toolCalls` events coalesce into ONE transcript entry with N calls — and
+the framework executes all of them before re-responding), usage events with
+`cachedTokenCount`, `toolCallingMode` honoring (`.disallowed` drops the tools block,
+`.required` renders a must-call instruction), and a working `prewarm`.
+
+Two beta behaviors the packaged executor encodes (verified macOS 27.0 beta):
+
+- **Don't send WWDC-339-style upfront usage/metadata.** A `.response(updateUsage:)` event on a
+  turn that ends in tool calls materializes an EMPTY `Response` transcript entry. Send
+  metadata + usage once at end of turn, attached to the entry kind the turn produced.
+- **Breaking the token stream does not stop the pipelined engine.** It generates to
+  `maxTokens` in the background and those post-EOS tokens land in the KV cache; the next
+  `engine.reset()` blocks on them (and its internal drain traps after ~5 s — big slow models
+  beware). The packaged executor pumps the stream through a task it can settle on the next
+  respond instead of breaking the engine stream directly.
 
 ## Traps
 
@@ -141,6 +157,15 @@ usage events) is planned; until then the recipe above is complete.
    turn 2 = 2.8 s on the 0.8B with a 3-entry history + hidden thinking).
 7. **Thinking is invisible in `response.content`** — it lands as `.reasoning` transcript
    entries. A "hanging" first response is usually the model thinking.
+8. **Small `maximumResponseTokens` + a thinking model = no response at all.** If the cap cuts
+   generation mid-`<think>`, the turn produces only reasoning events and the session throws
+   "ended without producing a response". Budget caps with thinking headroom (or use a
+   non-thinking model).
+9. **Tool-prompt dialects don't transfer.** LFM2.5 ignores in-context Hermes
+   `<tool_call>`-JSON instructions and emits its native special-token dialect
+   (`<|tool_call_start|>[fn(arg=…)]<|tool_call_end|>`, pythonic) — the training prior wins.
+   Tool calling per model family needs its native rendering+parsing; the Qwen/Hermes dialect
+   in `ZooFMProvider` covers Qwen3.5 today (Granite/LFM native dialects are follow-ups).
 
 ## Sources
 

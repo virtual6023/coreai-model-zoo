@@ -1,8 +1,66 @@
-# CoreAIRunner — Swift package
+# Swift package — `ZooFMProvider` + `CoreAIRunner`
 
-A small, self-contained Swift package that drives Core AI `.aimodel` LLM bundles — including the
-**non-standard architectures** Apple's high-level `CoreAILM` pipeline can't (hybrid SSM states,
-dual-KV + per-layer-embedding decoders). Built on the low-level `CoreAI` system framework only.
+Two libraries in one package:
+
+| Product | What | Status |
+|---|---|---|
+| [`ZooFMProvider`](Sources/ZooFMProvider/) | Zoo bundles behind FoundationModels' `LanguageModelSession`, with **tool calling**, streaming, usage events, and append-only KV reuse — the capabilities Apple's `CoreAILanguageModel` adapter doesn't implement | ✅ verified on macOS 27 beta (Qwen3.5-0.8B int8) |
+| [`CoreAIRunner`](Sources/CoreAIRunner/) | Self-contained N-state engine on the low-level `CoreAI` system framework only (no `coreai-models` dependency) | ⚠️ DRAFT — authored on macOS 26.6, not yet compiled |
+
+## ZooFMProvider
+
+```swift
+import FoundationModels
+import ZooFMProvider
+
+let model = try await ZooLanguageModel(resourcesAt: bundleDir)   // any zoo LanguageBundle
+let session = LanguageModelSession(model: model, tools: [WeatherTool()])
+let answer = try await session.respond(to: "What's the weather in Tokyo?")
+```
+
+The same `session.respond` / `streamResponse` / `Tool` / `@Generable` API as Apple's built-in
+model. The model emits Qwen/Hermes-style `<tool_call>` JSON, the framework executes your Swift
+`Tool`, and the model answers grounded on the result. `<think>` blocks stream to
+`Transcript.reasoning` entries; `session.usage` reports prompt/generated token counts including
+KV-cache reuse (`cachedTokenCount`).
+
+**Requirements** — same as [`../apps/`](../apps/README.md): clone `coreai-models` at this repo's
+root and apply the four-patch stack (the package depends on it by path; hybrid-architecture
+bundles need the patches at runtime too):
+
+```bash
+cd ..   # repo root
+git clone https://github.com/apple/coreai-models
+git -C coreai-models apply apps/coreai-shared-product.patch \
+                           apps/coreai-pipelined-extra-states.patch \
+                           apps/coreai-pipelined-per-token-inputs.patch \
+                           apps/coreai-pipelined-static-inputs.patch
+cd swift
+export DEVELOPER_DIR=/path/to/Xcode-beta.app/Contents/Developer
+swift build -c release --product zoo-fm-gate
+```
+
+A path dependency was chosen over a URL dependency deliberately: SPM-managed checkouts are
+immutable, so the patch stack — which the flagship hybrid bundles (Qwen3.5, LFM2.5, Granite)
+require — could not be applied to one. Without the clone at the repo root, `swift build` fails
+at manifest resolution; that is the documented trade-off.
+
+Verification harness (macOS):
+
+```bash
+swift run -c release zoo-fm-gate <bundle-dir> chat        # plain-chat regress, streamed deltas
+swift run -c release zoo-fm-gate <bundle-dir> tools       # two-tool round trip
+swift run -c release zoo-fm-gate <bundle-dir> multiturn   # per-turn latency + KV reuse
+ZOO_FM_DEBUG=1 ...                                        # log KV fast-path / reset decisions
+```
+
+Known limits (see [`../knowledge/fm-provider.md`](../knowledge/fm-provider.md) for the full
+gap table): no `.guidedGeneration` on pipelined bundles (on-GPU sampling exposes no logits —
+schema requests throw `unsupportedCapability`); one session per model instance at a time; the
+tool-prompt dialect is Qwen/Hermes ChatML (LFM2.5's native special-token dialect is documented
+but not yet rendered).
+
+## CoreAIRunner (draft)
 
 - `Sources/CoreAIRunner/HybridCoreAIEngine.swift` — generic **N-state** engine (Apple's
   `CoreAISequentialEngine` is hard-coded to 2 states; Qwen3.5/Gemma 4 need 4), fixed-capacity,
@@ -13,18 +71,10 @@ dual-KV + per-layer-embedding decoders). Built on the low-level `CoreAI` system 
 - `Sources/coreai-run/` — a minimal CLI to validate the engine on macOS (feeds raw token ids,
   greedy-decodes, prints) before the iOS app.
 
-## Status
-
-⚠️ **DRAFT — written on macOS 26.6, not yet compiled** (the Core AI Swift runtime needs macOS 27).
-Authored against the exact API used by Apple's `CoreAISequentialEngine.swift`. Build + fix on
-macOS 27:
-
-```bash
-export DEVELOPER_DIR=/path/to/Xcode-beta.app/Contents/Developer   # Xcode 27 beta, no sudo needed
-swift build
-swift run coreai-run --model <bundle.aimodel> --vocab <N> --prompt "id,id,..." --max 5
-```
+⚠️ Authored against the exact API used by Apple's `CoreAISequentialEngine.swift`, not yet
+compiled. Note: Apple's `CoreAILanguageModels` module also declares a type named `CoreAIRunner`
+— don't import both modules in one file, or qualify uses.
 
 See [`../knowledge/swift-runtime.md`](../knowledge/swift-runtime.md) for the API + per-model
 runtime contracts, and [`../apps/CoreAIChat/`](../apps/CoreAIChat/) for the iOS chat app that
-embeds this package.
+embeds the same patterns.

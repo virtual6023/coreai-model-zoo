@@ -14,6 +14,10 @@ weights/
 DerivedData/
 *.xcuserstate
 xcuserdata/
+Package.resolved
+# coreai-models clone (or symlink) at the repo root — required by apps/ and by
+# swift/'s ZooFMProvider target (see apps/README.md, swift/README.md)
+/coreai-models
 # Python
 .venv/
 __pycache__/

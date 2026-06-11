@@ -23,10 +23,10 @@ on-device, with the conversion code and a knowledge base. Successor to
 
 | | iPhone 17 Pro · GPU | iPhone 17 Pro · ANE | M4 Max · GPU |
 |---|---|---|---|
-| **Qwen3.5-0.8B** | **69.7–74.0** | 14.7 | **210** |
-| **Qwen3.5-2B** | **28–30** | — | **161** |
-| **LFM2.5-1.2B** | **44.1–46.6** | — | **276.5** |
-| **Granite 4.0-H 1B** | **35.4–37.1** | — | **136.5** |
+| **Qwen3.5-0.8B** | **71.9** | 14.7 | **210** |
+| **Qwen3.5-2B** | **29** | — | **161** |
+| **LFM2.5-1.2B** | **45.4** | — | **276.5** |
+| **Granite 4.0-H 1B** | **36.3** | — | **136.5** |
 | **Gemma 4 E2B** | **30.3** | 6 | **77.0** |
 
 Measured on the iOS 27 / macOS 27 beta, all on Apple's `coreai-pipelined` GPU engine (zero

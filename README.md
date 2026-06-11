@@ -14,17 +14,19 @@ on-device, with the conversion code and a knowledge base. Successor to
 | **LFM2.5-1.2B-Instruct** | [🤗 LFM2.5-1.2B-CoreAI](https://huggingface.co/mlboydaisuke/LFM2.5-1.2B-CoreAI) | LFM Open License v1.0 |
 | **Granite 4.0-H 1B / 350M** | [🤗 granite-4.0-h-CoreAI](https://huggingface.co/mlboydaisuke/granite-4.0-h-CoreAI) | Apache-2.0 |
 
-### Decode throughput (greedy; output top-1 exact vs the Hugging Face reference)
+### Decode throughput (tok/s, greedy; output top-1 exact vs the Hugging Face reference)
 
 | | iPhone 17 Pro · GPU | iPhone 17 Pro · ANE | M4 Max · GPU |
 |---|---|---|---|
-| **Qwen3.5-0.8B** | **69.7–74.0 tok/s**<br><sub>int8 + per-channel absmax int8 head · loop-free × pipelined engine (fp16-head: 50.3–51.5 · shipped app: int8 fused kernels 42.5–45.4 · prefill 147 tok/s q16 chunks)</sub> | **14.7 tok/s**<br><sub>int8 · dynamic</sub> | **210 tok/s**<br><sub>int8 + per-channel absmax int8 head · loop-free × pipelined engine (custom-kernel CLI: 58.5)</sub> |
-| **Qwen3.5-2B** | **28–30 tok/s**<br><sub>int8 + per-channel absmax int8 head · ≥ CoreML-2B (~27) · 24/24 ≡ Mac-GPU (needs the increased-memory entitlement)</sub> | — | **161 tok/s**<br><sub>int8 + per-channel absmax int8 head · loop-free × pipelined engine (fp16-head int8lin: 127)</sub> |
-| **LFM2.5-1.2B** | **38.0–39.6 tok/s**<br><sub>int8 linear · pipelined engine (~87% of naive BW ceiling; 24/24 ≡ Mac-GPU)</sub> | — | **253 tok/s**<br><sub>int8 linear · pipelined engine — first non-Qwen rider (fp16: 162)</sub> |
-| **Granite 4.0-H 1B** | **30.2–31.3 tok/s**<br><sub>int8 linear · pipelined engine (~84% of naive BW ceiling; 24/24 ≡ Mac-GPU)</sub> | — | **136.5 tok/s**<br><sub>int8 linear · pipelined engine — first Mamba2 SSM rider (fp16: 103.6; 350m fp16: 191)</sub> |
-| **Gemma 4 E2B** | **30.3 tok/s**<br><sub>int4 linear · pipelined engine, PLE table as static graph input, AOT · prefill 38.9 (per-token provider: 26.5 / 40.5 · kernel monolith: 22)</sub> | **6 tok/s**<br><sub>int8 · 6 chunks</sub> | **77.0 tok/s**<br><sub>int4 linear · pipelined engine, PLE table as static graph input (int8 kernel CLI: 56.6–59)</sub> |
+| **Qwen3.5-0.8B** | **69.7–74.0** | 14.7 | **210** |
+| **Qwen3.5-2B** | **28–30** | — | **161** |
+| **LFM2.5-1.2B** | **38.0–39.6** | — | **253** |
+| **Granite 4.0-H 1B** | **30.2–31.3** | — | **136.5** |
+| **Gemma 4 E2B** | **30.3** | 6 | **77.0** |
 
-Measured on the iOS 27 / macOS 27 beta. Sizes, configurations, and caveats: [`zoo/`](zoo/).
+Measured on the iOS 27 / macOS 27 beta, all on Apple's `coreai-pipelined` GPU engine (zero
+custom kernels) except the ANE column. Per-model configurations, prefill numbers, sizes, and
+caveats: [`zoo/`](zoo/).
 
 Next up: Gemma 4 E4B · Qwen3-VL.
 

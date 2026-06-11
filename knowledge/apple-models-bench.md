@@ -23,17 +23,30 @@ real hardware.
 | qwen3-4b | `4bit` / fp16 / ctx 40960 | 2.1 GB | 1635 | 145.4 (164 short-ctx) | 0.36 s (cold 1.95 s) | 4.6 GB RSS | |
 | qwen3-8b | `4bit` / fp16 / ctx 40960 | 4.3 GB | 912 | 94.1 (102 short-ctx) | 0.64 s (cold 2.92 s) | 9.3 GB RSS | |
 | gemma3-4b-it | `4bit` / bf16 / ctx 131072 | 2.1 GB | 1669 | 141.5 (157 short-ctx) | 0.32 s (cold 2.20 s) | 4.5 GB RSS | HF gated |
-| gemma3-12b-it | `4bit` / bf16 / ctx 131072 | TBD | TBD | TBD | TBD | TBD | HF gated |
+| gemma3-12b-it | `4bit` / bf16 / ctx 131072 | 6.2 GB | 578 | 55.0 (59 short-ctx) | 5.4–7.7 s (variance across runs) | 13.4 GB RSS | HF gated |
 | mistral-7b-instruct-v0.3 | `4bit` / fp16 / ctx 8192 | 3.8 GB | 976 | 101.7 (109 short-ctx) | 0.56 s (cold 2.49 s) | 8.3 GB RSS | 27 GB download — see gotchas |
 
 ## LLMs — iPhone 17 Pro
 
 Only Qwen has iOS presets (gemma3 / mistral / gpt-oss are macOS-only in the registry).
+iOS execution requires AOT compilation: `xcrun coreai-build compile <ir.aimodel>
+--platform iOS --preferred-compute <unit> --architecture h18p` (h18p = iPhone 17 Pro
+GPU family), then point `metadata.json` `assets.main` at the `.aimodelc` — an
+uncompiled `.aimodel` fails at engine load with `NSPOSIXErrorDomain Code=2`.
+Harness: official `llm-benchmark` logic embedded in a minimal app (same synthetic
+protocol as the Mac rows, 512p/1024g/5 — note this carries a much deeper KV than
+"short-chat" benchmarks elsewhere; numbers are NOT comparable across protocols).
+All decode numbers are engine-warm (each run does a warmup trial first). Cold/warm
+applies to LOAD: cold = first launch after install (on-device specialization),
+warm = relaunch. Run 1 / run 2 = back-to-back launches; the drop on run 2 is
+thermal, not cache state.
 
-| Model | Recipe | Artifact | Prompt tok/s | Gen tok/s | Cold / warm load | Notes |
+| Variant | Source export | Prompt tok/s | Gen tok/s (run 1 / run 2) | Load cold / warm | Footprint | Notes |
 |---|---|---|---|---|---|---|
-| qwen3-0.6b | mixed 4/8-bit palettized yaml / ctx 4096 | TBD | TBD | TBD | TBD | |
-| qwen3-4b | mixed 4/8-bit palettized yaml / ctx 4096 | TBD | TBD | TBD | TBD | |
+| qwen3-0.6b ANE (official iOS preset) | mixed 4/8-bit static, ctx 4096 | 5,325 | **69.6** / 54.1 | 2.85 s / **0.045 s** | 1.1 GB | |
+| qwen3-0.6b GPU (macOS dynamic compiled for iOS) | `4bit` dynamic (macOS-27β artifact) | 1,519 | 57.2 / 52.5 | 1.14 s / 0.07 s | 0.47 GB | pipelined engine |
+| qwen3-0.6b GPU — **macOS-26 artifact** | same recipe, 26-era export | **5,807** | **115.1** / 90.4 | 0.90 s / 0.066 s | **0.22 GB** | **the lowering A/B on device: ~2× decode, 3.8× prefill, half the memory of the 27β artifact** |
+| qwen3-4b | mixed 4/8-bit static, ctx 4096 | TBD | TBD | TBD | TBD | |
 
 ## Vision models — GPU vs ANE (Mac + iPhone)
 
@@ -136,6 +149,7 @@ Decode tok/s (and prefill in parentheses):
 | qwen3-4b | 145.4 (**1635**) | 145.8 (1495) | tie |
 | qwen3-8b | **94.1** (912) | 90.0 (825) | **Core AI +5%** |
 | gemma3-4b-it | **141.5** (1669) | 136.3 (1631) | **Core AI +4%** |
+| gemma3-12b-it | 55.0 (**578**) | 55.1 (528) | tie |
 | mistral-7b-v0.3 | **101.7** (976) | 97.5 (918) | **Core AI +4%** |
 
 **The pattern: Core AI matches or beats MLX on every dense model (+4–12% decode,

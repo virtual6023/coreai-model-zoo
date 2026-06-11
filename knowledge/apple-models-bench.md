@@ -85,6 +85,10 @@ variant pays one-time specialization, ~5 s for CLIP; subsequent loads are sub-se
 
 ## Reproduction
 
+Don't want to export? **Every bundle in these tables is on HF, hash-stamped**
+(`mlboydaisuke/<model>-CoreAI-official`, incl. the macOS-26 0.6B artifact):
+https://huggingface.co/mlboydaisuke
+
 ```bash
 git clone https://github.com/apple/coreai-models && cd coreai-models
 uv run coreai.llm.export <preset>            # e.g. gpt-oss-20b, qwen3-0.6b

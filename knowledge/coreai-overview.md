@@ -52,6 +52,10 @@ PyTorch (re-authored model)
   gets the Foundation Models ergonomics. (For non-standard architectures the high-level pipeline can't
   express — multi-state SSMs, dual-KV — drop to the low-level `CoreAI` framework; see
   [`swift-runtime.md`](swift-runtime.md).)
+  *Update 2026-06-11, verified:* with the pipelined-engine patch stack, the non-standard bundles (hybrid
+  Qwen3.5, SSM Granite/LFM) DO run behind `LanguageModelSession` too; note guided generation requires
+  engine logits, which GPU-pipelined bundles don't expose — details, tool-calling recipe, and traps in
+  [`fm-provider.md`](fm-provider.md).
 
 ## Why this repo exists
 

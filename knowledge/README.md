@@ -20,6 +20,11 @@ Hard-won, verified notes on Apple's Core AI (iOS/macOS 27) — what the docs don
   (qwen3.5: Mac 204 tok/s, iPhone 50.3–51.5). The decode-only loop-free export, the extra-states
   engine patch, the chunk=1 / warmup-256 traps, LUT-vs-linear int8, oracle gating, and what
   fits/doesn't (Gemma 4's PLE doesn't — yet).
+- [`fm-provider.md`](fm-provider.md) — **zoo models behind Apple's `LanguageModelSession`**
+  (WWDC 339): `CoreAILanguageModel(resourcesAt:)` = the whole integration (verified, incl.
+  hybrid/SSM bundles on the patched pipelined engine), plus the own-conformance recipe that
+  adds **tool calling** (verified round trip) and the protocol traps (dead prewarm, no guided
+  generation on pipelined, re-prefill tax).
 - [`custom-metal-kernels.md`](custom-metal-kernels.md) — `TorchMetalKernel` (WWDC 325): the API, the
   register-then-add order, MSL embedded in the `.aimodel`, GPU-only, what to (and not to) kernelize.
   Still the tool when a model CAN'T ride the pipelined engine (e.g. Gemma 4).

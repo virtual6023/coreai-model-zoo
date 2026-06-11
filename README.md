@@ -10,7 +10,8 @@ on-device, with the conversion code and a knowledge base. Successor to
 |---|---|---|
 | **Qwen3.5-0.8B** | [🤗 qwen3.5-0.8B-CoreAI](https://huggingface.co/mlboydaisuke/qwen3.5-0.8B-CoreAI) | Apache-2.0 |
 | **Qwen3.5-2B** | [🤗 qwen3.5-2B-CoreAI](https://huggingface.co/mlboydaisuke/qwen3.5-2B-CoreAI) | Apache-2.0 |
-| **Gemma 4 E2B** (text) | [🤗 gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI) | Gemma |
+| **Gemma 4 E2B** (text, incl. official-QAT int4) | [🤗 gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI) | Gemma |
+| **Gemma 4 E4B** (text, official-QAT int4) | [🤗 gemma-4-E4B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E4B-CoreAI) | Gemma |
 | **LFM2.5-1.2B-Instruct** | [🤗 LFM2.5-1.2B-CoreAI](https://huggingface.co/mlboydaisuke/LFM2.5-1.2B-CoreAI) | LFM Open License v1.0 |
 | **Granite 4.0-H 1B / 350M** | [🤗 granite-4.0-h-CoreAI](https://huggingface.co/mlboydaisuke/granite-4.0-h-CoreAI) | Apache-2.0 |
 
@@ -22,11 +23,14 @@ on-device, with the conversion code and a knowledge base. Successor to
 | **Qwen3.5-2B** | **29** | — | **161** |
 | **LFM2.5-1.2B** | **45.4** | — | **276.5** |
 | **Granite 4.0-H 1B** | **36.3** | — | **136.5** |
-| **Gemma 4 E2B** | **30.3** | 6 | **77.0** |
+| **Gemma 4 E2B** | **30.3** (QAT 30.7) | 6 | **77.0** (QAT 78.9) |
+| **Gemma 4 E4B** (official QAT) | **15.1** | — | **55.8** |
 
 Measured on the iOS 27 / macOS 27 beta, all on Apple's `coreai-pipelined` GPU engine (zero
 custom kernels) except the ANE column. Per-model configurations, prefill numbers, sizes, and
-caveats: [`zoo/`](zoo/).
+caveats: [`zoo/`](zoo/). The Gemma 4 QAT rows are re-exports of Google's official
+QAT-q4_0 checkpoints — same speed, **int4 ≈ bf16 quality by design**
+([`zoo/gemma4-e2b.md`](zoo/gemma4-e2b.md)).
 
 <p align="center">
   <img width="380" alt="CoreAIChat screen recording" src="https://github.com/user-attachments/assets/999dbd95-45b5-468f-b1a8-34112ee3b74d" />

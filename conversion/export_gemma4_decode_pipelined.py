@@ -33,6 +33,12 @@ Measured M4 Max (release, chunk=1, p128 g256): int4lin 70.9 decode / 85.3 prefil
 int4lin --tbl 77.0 / 87.1; int8lin 57.2 / 71.9; int4km 31.5 / 41.0 (k-means LUT
 dequant is the slow class).
 
+--hf-id picks the checkpoint (default google/gemma-4-E2B-it). The QAT releases
+(`google/gemma-4-{E2B,E4B}-it-qat-q4_0-unquantized`, bf16 weights TRAINED for q4_0
+rounding) ride the same path — the bundle name gains a `_qat` suffix and E4B is
+derived from the config (42 layers, hidden 2560, 2 KV heads, 24 KV slots). The PLE
+dump dir (--raw-dir) and the oracle MUST be regenerated from the same checkpoint.
+
 Run (from a coreai-models checkout with the model overlay):
   python export_gemma4_decode_pipelined.py [fp16|int8lin|int4lin|int4km] [--tbl] [--max-ctx 4096]
 Requires the gemma4_text + gemma4_pipelined model overlay (see conversion/README.md) and,
@@ -60,8 +66,15 @@ from coreai_models.models.macos.gemma4_pipelined import (
 )
 from coreai_models.models.macos.gemma4_text import Gemma4ForCausalLM
 
-HF_ID = "google/gemma-4-E2B-it"
+DEFAULT_HF_ID = "google/gemma-4-E2B-it"
 DTYPE = torch.float16
+
+
+def bundle_basename(hf_id: str) -> str:
+    """gemma4_{e2b|e4b}[_qat] from the checkpoint id."""
+    low = hf_id.lower()
+    size = "e4b" if "e4b" in low else "e2b"
+    return f"gemma4_{size}" + ("_qat" if "qat" in low else "")
 
 
 def int4km_config() -> dict:
@@ -86,12 +99,14 @@ def int4km_config() -> dict:
     }
 
 
-def linear_quant_config(dtype: str = "int8") -> dict:
+def linear_quant_config(dtype: str = "int8", qscheme: str = "symmetric_with_clipping") -> dict:
     """Weight-only linear per-block-32 (scale-multiply dequant, no LUT) incl. the head.
 
     dtype "int8" = the qwen ship recipe; "int4" = the int4-bytes-without-LUT candidate
     (the int4 K-MEANS variant measured ~2x slower than int8lin on this delegate — the
-    LUT gather, not bandwidth, dominates it).
+    LUT gather, not bandwidth, dominates it). qscheme "symmetric" (plain absmax, no
+    clipping) matches the q4_0 grid the QAT checkpoints were TRAINED for (llama.cpp
+    Q4_0 = per-block-32 absmax symmetric) — the --lin-sym probe.
     """
     return {
         "execution_mode": "eager",
@@ -99,7 +114,7 @@ def linear_quant_config(dtype: str = "int8") -> dict:
             "op_state_spec": {
                 "weight": {
                     "dtype": dtype,
-                    "qscheme": "symmetric_with_clipping",
+                    "qscheme": qscheme,
                     "granularity": {"type": "per_block", "block_size": 32, "axis": 1},
                 }
             },
@@ -117,20 +132,20 @@ def linear_quant_config(dtype: str = "int8") -> dict:
     }
 
 
-def write_bundle_metadata(out_dir: Path, name: str, cfg, max_ctx: int) -> None:
+def write_bundle_metadata(out_dir: Path, name: str, hf_id: str, cfg, max_ctx: int) -> None:
     meta = {
         "metadata_version": "0.2",
         "kind": "llm",
         "name": name,
         "assets": {"main": f"{name}.aimodel"},
         "language": {
-            "tokenizer": HF_ID,
+            "tokenizer": hf_id,
             "vocab_size": cfg.vocab_size,
             "max_context_length": max_ctx,
             "embedded_tokenizer": True,
             "function_map": {"main": ["main"]},
         },
-        "source": {"model_definition": "torch", "hf_model_id": HF_ID},
+        "source": {"model_definition": "torch", "hf_model_id": hf_id},
         "compression": None,
         "compilation": {"date": datetime.now(timezone.utc).isoformat(), "targets": []},
     }
@@ -149,14 +164,20 @@ def main() -> None:
     ap.add_argument("--raw-dir", default="gemma4_gather_raw",
                     help="gather-table dump dir (embed_per_layer.i8/.scale.f32 + "
                          "meta.json)")
+    ap.add_argument("--hf-id", default=DEFAULT_HF_ID,
+                    help="checkpoint id (E2B/E4B, base or QAT-unquantized)")
+    ap.add_argument("--lin-sym", action="store_true",
+                    help="linear modes: plain absmax symmetric (no clipping) — the "
+                         "QAT-grid-aligned variant (q4_0 = per-block-32 absmax)")
     ap.add_argument("--max-ctx", type=int, default=4096)
     ap.add_argument("--out-dir", default="exports")
     args = ap.parse_args()
-    name = f"gemma4_e2b_decode_{args.mode}" + ("_tbl" if args.tbl else "")
+    name = (f"{bundle_basename(args.hf_id)}_decode_{args.mode}"
+            + ("sym" if args.lin_sym else "") + ("_tbl" if args.tbl else ""))
 
     model_dir = snapshot_download(
-        HF_ID, allow_patterns=["*.safetensors", "*.safetensors.index.json", "*.json"])
-    print(f"loading {HF_ID} (fp16) ...")
+        args.hf_id, allow_patterns=["*.safetensors", "*.safetensors.index.json", "*.json"])
+    print(f"loading {args.hf_id} (fp16) ...")
     causal = Gemma4ForCausalLM.from_local(model_dir, dtype=DTYPE).eval()
     cfg = causal.config
 
@@ -199,11 +220,12 @@ def main() -> None:
         from coreai_models.export.compression import quantize_pytorch_model
 
         dtype = "int4" if args.mode == "int4lin" else "int8"
+        qscheme = "symmetric" if args.lin_sym else "symmetric_with_clipping"
         model.lm_head.weight = torch.nn.Parameter(model.lm_head.weight.detach().clone())
-        print(f"quantizing (linear {dtype} per-block-32 incl. untied head) ...")
+        print(f"quantizing (linear {dtype} per-block-32, {qscheme}, incl. untied head) ...")
         model = quantize_pytorch_model(
             model, tuple(spec["reference_inputs"].values()),
-            spec["dynamic_shapes"], linear_quant_config(dtype))
+            spec["dynamic_shapes"], linear_quant_config(dtype, qscheme))
 
     print("exporting decode-only engine graph to Core AI dialect ...")
     prog = export_to_coreai(
@@ -229,7 +251,7 @@ def main() -> None:
     print(f"saving {aimodel} ...")
     prog.save_asset(aimodel, rt.AIModelAssetMetadata())
 
-    write_bundle_metadata(out_dir, name, cfg, args.max_ctx)
+    write_bundle_metadata(out_dir, name, args.hf_id, cfg, args.max_ctx)
     # Copy tokenizer files straight from the HF snapshot — the venv's transformers
     # predates the gemma4 tokenizer's extra_special_tokens format and can't
     # round-trip it through AutoTokenizer.

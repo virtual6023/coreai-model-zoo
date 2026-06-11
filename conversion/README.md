@@ -40,7 +40,7 @@ overlay** of that package. Concretely, the additions are:
   two macOS-27-beta GPU-delegate workarounds (fused single conv-state write; fp32 attention
   projections). Same engine patch + `COREAI_CHUNK_THRESHOLD=1` run contract. See
   [`../zoo/lfm2.5.md`](../zoo/lfm2.5.md).
-- **Gemma 4 E2B pipelined fast path (in this dir): `export_gemma4_decode_pipelined.py [int4lin]`** —
+- **Gemma 4 E2B / E4B pipelined fast path (in this dir): `export_gemma4_decode_pipelined.py [int4lin]`** —
   decode-only S=1 bundle whose per-layer-embedding rows arrive as a per-token INPUT (the 9.4 GB
   PLE table stays a host mmap): in-graph embed + softcapped head, ONE unified padded KV pair,
   oracle 8/8, **70.9 tok/s decode on M4 Max** (+20-25% over the int4km-kernel CLI, zero custom
@@ -53,6 +53,14 @@ overlay** of that package. Concretely, the additions are:
   needs `../apps/coreai-pipelined-static-inputs.patch` + an app that binds the two dump files
   via `EngineOptions.staticInputBuffers` — buffer-mode traps in
   [`../knowledge/pipelined-engine.md`](../knowledge/pipelined-engine.md)).
+  **`--hf-id` swaps the checkpoint**: Google's official QAT releases
+  (`google/gemma-4-{E2B,E4B}-it-qat-q4_0-unquantized`) ride the same script — bundle names
+  gain `_qat`, E2B-QAT measures 74.7/78.9 (provider/tbl) and **E4B (42L, 2 KV heads, dense
+  — no MoE, zero model-code changes) 53.2/55.8**, all oracle 8/8; q4_0 IS per-block-32
+  absmax int4, so these bundles carry Google's "≈ bf16" QAT quality claim. Regenerate the
+  PLE dump (`--out`) and the oracle (`gen_gemma4_prompt.py --tag`) from the same
+  checkpoint; `--lin-sym` exports the literal-q4_0-grid (absmax) variant (measured: same
+  gate, same speed). See [`../zoo/gemma4-e4b.md`](../zoo/gemma4-e4b.md).
 - **Granite 4.0-H pipelined (in this dir): `export_granite4h_decode_pipelined.py [fp16|int8lin|int8hu]`** —
   the first Mamba2/SSM-scan rider: at S=1 the selective scan is a single recurrence step
   (loop-free, no while_loop), states = KV (4 attn layers) + conv/SSM stacks (= the ≤2

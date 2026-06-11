@@ -60,6 +60,36 @@ engine patches in [`../apps/`](../apps/), full method + traps in
   (19.8 vs 30.3 ten minutes apart); buffer-mode traps in the knowledge page.
 - Both beat the kernel monolith row above on device (22–24), with on-device KV growth
   and on-GPU argmax for free.
+
+#### QAT weights (2026-06-11): int4 quality now design-guaranteed
+
+The same two configs re-exported from Google's official QAT release
+[`google/gemma-4-E2B-it-qat-q4_0-unquantized`](https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-unquantized)
+— bf16 weights **trained for q4_0 rounding** (q4_0 = per-block-32 absmax symmetric int4,
+i.e. exactly this int4-linear recipe class). Google: the QAT checkpoints "*preserv[e]
+similar quality to bfloat16*", and the unquantized variant is published precisely for
+"*custom downstream compilation*". This upgrades the int4 claim from "PTQ that happens to
+gate 8/8" to **int4 ≈ bf16 by design** — and it is the one int4 route that doesn't depend
+on the model winning the int4-tolerance lottery (qwen3.5 ✗ / LFM2.5 ✗ / gemma4 ✓).
+
+| `gemma4_e2b_qat_decode_…` (oracle regenerated from the QAT checkpoint, margins ≥ 1.97) | M4 Max decode / prefill | iPhone 17 Pro decode / prefill |
+|---|---|---|
+| `int4lin` (provider) | 74.7 / 89.6 | — (AOT compiled, untested) |
+| `int4lin --tbl` | **78.9 / 89.6** | **30.7 / 36.7** (settled; hf-oracle 8/8) |
+
+- Speed is unchanged vs the PTQ bundles (same bytes, same graph) — **the QAT deliverable
+  is the quality guarantee**, not throughput. All four bundles gate 8/8 (python GPU +
+  engine path); on device the 8 HF-anchored oracle tokens are exact (the 24-token
+  Mac-engine determinism check forks once at a post-`<end_of_turn>` filler position —
+  fp16 noise territory, granite precedent: judge by the gate).
+- A `--lin-sym` probe (plain absmax, the literal q4_0 grid) also gates 8/8 at identical
+  speed (72.5 / 90.6) — clipping vs absmax doesn't matter on gemma4 QAT weights; the
+  proven clipping recipe stays the default.
+- QAT checkpoints **prune the dead shared-layer KV projections** (k_proj/v_proj/k_norm on
+  the 20 KV-shared layers — never used, those layers read the producer's cache slot); the
+  overlay loader tolerates the pruned layout. The PLE table and the oracle are
+  checkpoint-derived — both were regenerated from the QAT weights (a swapped checkpoint
+  is a different oracle).
 - **Chat-surface (CoreAIChat ⚡ mode, `--tbl` config, 200-token turn): decode 32.7 /
   prefill 44.2 tok/s** on a settled iPhone 17 Pro — the app binds the two PLE table files
   it already downloads for the kernel modes (`ios-frontend/gemma4_gather_raw/`) as owned
@@ -125,7 +155,9 @@ Re-authored decoder + stateful + ring + head + front-end gather in `conversion/`
 `coreai.llm.export gemma-4-e2b --compression int8` (core); `convert_head.py int8` (head);
 `export_gemma4_frontend.py` (front-end gather). Fixed-shape host-cache core + chunked ANE export +
 Metal-kernel variants ship alongside (`export_gemma4_hostcache*.py`, `export_gemma4_metal.py`,
-`export_gemma4_head_kernel.py`). E4B (adds MoE) is the next variant on the same path.
+`export_gemma4_head_kernel.py`). **E4B is ported** (config-verified clean DENSE — no MoE,
+contrary to an earlier note here): same pipelined path, zero model-code changes, see
+[`gemma4-e4b.md`](gemma4-e4b.md).
 
 Reference CoreML (NOT Core AI) throughput for scale: Gemma4-E2B ~34 tok/s on iPhone 17 Pro
 (stateful KV + pruned head + AOT — the stack Core AI reaches once the beta KV-write bug lifts).

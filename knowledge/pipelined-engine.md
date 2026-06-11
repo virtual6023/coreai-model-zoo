@@ -230,6 +230,22 @@ Pro (≥ the CoreML-2B port's ~27)**; qwen-0.8B **210 / 69.7–74.0** — greedy
 token-identical to the fp16-head bundles in both cases.
 The transformer body is fine WITH clipping (int8lin gates 16/16 everywhere) — this rule is
 specifically about fat-tailed embedding/head tables.
+**QAT checkpoints are the one GUARANTEED int4 route** (2026-06-11, gemma4): int4
+tolerance is a model lottery (gemma4-PTQ ✓ / qwen3.5 ✗ / LFM2.5 ✗), but Google's
+`gemma-4-{E2B,E4B}-it-qat-q4_0-unquantized` releases are bf16 weights *trained* for the
+q4_0 grid — and q4_0 IS per-block-32 absmax symmetric int4, the exact recipe class this
+delegate runs fast. Re-exported `int4lin` bundles from both QAT checkpoints gate 8/8
+(python + engine + device) at unchanged speed (E2B 74.7–78.9 / 30.7 settled device;
+E4B-from-QAT is the first E4B port: 53.2–55.8 on M4 Max), so the int4 claim upgrades
+from "PTQ that happens to gate" to "int4 ≈ bf16 by design" (Google's wording:
+"preserving similar quality to bfloat16"). A/B'd `symmetric` (the literal q4_0 grid)
+vs the default `symmetric_with_clipping` on the QAT weights: both 8/8, same speed —
+qscheme doesn't matter here; clipping stays the default. Two QAT-checkpoint traps:
+(1) they **prune dead weights** — KV-shared layers ship without k_proj/v_proj/k_norm
+(base checkpoints carry them unused), so a strict loader must tolerate exactly those;
+(2) the PLE table and the oracle are checkpoint-derived — regenerate BOTH from the QAT
+weights (the swapped checkpoint is a different oracle; same prompt, healthy margins,
+near-identical continuations in practice).
 **Per-channel (axis-0) int8 weights are BROKEN on this GPU delegate** (found 2026-06-11
 replicating the head lever on LFM2.5): the bundle loads and runs but the quantized matmul
 returns garbage (full-model gate 0/16 with cos=nan; minimal head-only graph reproduces it
@@ -338,6 +354,15 @@ at 210. CoreAIChat downloads the ship bundle since 2026-06-11 (chat-surface deco
   prefill floor (1.15 GB ÷ ~47 GB/s effective ≈ 25 ms) + ~13 ms/tok sampler round-trip in
   per-token mode (the PLE gather itself is ~0.1 ms — the serialization fear was mis-aimed);
   next levers are fusing the sampler into the model command buffer or a smaller head.
+  **Gemma-4-E4B rides the same path with ZERO model-code changes** (2026-06-11, from the
+  QAT checkpoint): the re-author is config-driven and the HF config carries everything
+  that differs — 42 layers (full attention every 6th), hidden 2560, **2 KV heads**,
+  18 KV-shared → 24 unified slots, `use_double_wide_mlp: false` (E4B's MLP is uniform
+  10240 — E2B's shared-layer double-wide is a config flag, and **E4B is clean dense, no
+  MoE**, `moe_intermediate_size: null`). Torch ladder 27/27 first run; int4lin 3.7 GB
+  gates 8/8; M4 Max 53.2 decode provider / 55.8 `--tbl`; AOT h18p compiles clean even at
+  3.7 GB constants. On iPhone only provider mode is arithmetically possible (3.7 GB graph
+  + 2.7 GB owned tables would exceed the ~6.4 GB entitled limit).
 - **Doesn't fit**: pure-RNN models (no growing KV — the engine's state model assumes one),
   models whose embed+head can't live in-graph, big MoE (different problem).
 

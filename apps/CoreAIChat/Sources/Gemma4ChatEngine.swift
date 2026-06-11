@@ -38,23 +38,27 @@ protocol Gemma4Backend: AnyObject {
 /// The MODEL level of the picker. GPU/ANE is a compute-unit toggle one level
 /// below this (gemma only — the pipelined models are GPU-only by design).
 enum ChatModel: String, CaseIterable, Identifiable {
-    case gemma = "Gemma 4 E2B", qwen = "Qwen3.5 0.8B", lfm2 = "LFM2.5 1.2B"
+    case gemma = "Gemma 4 E2B", qwen = "Qwen3.5 0.8B", qwen2b = "Qwen3.5 2B",
+         lfm2 = "LFM2.5 1.2B", granite = "Granite 1B"
     var id: String { rawValue }
 }
 
 // Engine-selection enum (model × compute unit flattened): the storage type the
 // whole engine layer is keyed on, and the headless GEMMA_ENGINE vocabulary
-// (gpu / ane / qwen / lfm2). The UI splits it into ChatModel + a gemma-only
-// GPU/ANE segment.
+// (gpu / ane / qwen / qwen2b / lfm2 / granite). The UI splits it into
+// ChatModel + a gemma-only GPU/ANE segment.
 enum GemmaMode: String, CaseIterable, Identifiable {
-    case gpu = "GPU", ane = "ANE", qwen = "Qwen", lfm2 = "LFM"
+    case gpu = "GPU", ane = "ANE", qwen = "Qwen", qwen2b = "Qwen2B",
+         lfm2 = "LFM", granite = "Granite"
     var id: String { rawValue }
     /// The model family this engine mode belongs to (the picker's top level).
     var chatModel: ChatModel {
         switch self {
         case .gpu, .ane: .gemma
         case .qwen: .qwen
+        case .qwen2b: .qwen2b
         case .lfm2: .lfm2
+        case .granite: .granite
         }
     }
     /// User-facing label for the download panel (model, plus unit where it matters).
@@ -63,14 +67,18 @@ enum GemmaMode: String, CaseIterable, Identifiable {
         case .gpu: "Gemma 4 E2B · GPU"
         case .ane: "Gemma 4 E2B · ANE"
         case .qwen: "Qwen3.5 0.8B"
+        case .qwen2b: "Qwen3.5 2B"
         case .lfm2: "LFM2.5 1.2B"
+        case .granite: "Granite 4.0-H 1B"
         }
     }
     /// Non-nil for the modes that ride the coreai-pipelined engine.
     var pipelinedSpec: PipelinedBackend.Spec? {
         switch self {
         case .qwen: PipelinedBackend.qwen
+        case .qwen2b: PipelinedBackend.qwen2b
         case .lfm2: PipelinedBackend.lfm2
+        case .granite: PipelinedBackend.granite
         case .gpu, .ane: nil
         }
     }
@@ -97,7 +105,9 @@ final class Gemma4ChatEngine: ObservableObject {
         switch ProcessInfo.processInfo.environment["GEMMA_ENGINE"] {
         case "ane": mode = .ane
         case "qwen": mode = .qwen
+        case "qwen2b": mode = .qwen2b
         case "lfm2", "lfm": mode = .lfm2
+        case "granite": mode = .granite
         default: mode = .gpu
         }
     }
@@ -112,7 +122,10 @@ final class Gemma4ChatEngine: ObservableObject {
     static func defaultRepo(for mode: GemmaMode) -> String {
         switch mode {
         case .qwen: "https://huggingface.co/mlboydaisuke/qwen3.5-0.8B-CoreAI"
+        case .qwen2b: "https://huggingface.co/mlboydaisuke/qwen3.5-2B-CoreAI"
         case .lfm2: "https://huggingface.co/mlboydaisuke/LFM2.5-1.2B-CoreAI"
+        // Granite bundle upload is pending — sideload until the repo is live.
+        case .granite: "https://huggingface.co/mlboydaisuke/granite-4.0-h-1b-CoreAI"
         case .gpu, .ane: "https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI"
         }
     }
@@ -124,7 +137,7 @@ final class Gemma4ChatEngine: ObservableObject {
     func missingDownloads() -> [ModelDownloader.Item] {
         var paths: [(remote: String, local: String)]
         switch mode {
-        case .qwen, .lfm2:
+        case .qwen, .qwen2b, .lfm2, .granite:
             let spec = mode.pipelinedSpec!
             paths = [(spec.hfRemotePath, spec.bundleName)]
         case .gpu:

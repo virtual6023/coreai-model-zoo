@@ -7,8 +7,12 @@
 //     (vs 42.5–45.4 for the fused-kernel static monolith)
 //   * LFM2.5-1.2B int8lin  — 38.0–39.6 tok/s decode (~87% of the naive BW
 //     ceiling; conv+attention hybrid, first non-Qwen rider)
+//   * Qwen3.5-2B int8lin   — 19–21 tok/s decode; the 2.4 GB bundle needs the
+//     increased-memory entitlement (this app has it) and pays a ~30 s cold
+//     GPU specialization on first load
+//   * Granite-4.0-H-1B int8lin — Mamba2+attention hybrid (first SSM-scan rider)
 // Requires the engine extra-states patch on the local coreai-models package
-// (the fixed-shape extra states: qwen's SSM conv/rec, lfm2's conv columns).
+// (the fixed-shape extra states: SSM conv/rec, lfm2's conv columns).
 //
 // Engine contract for these bundles (input_ids is STATIC [1,1]):
 //   * COREAI_CHUNK_THRESHOLD=1 before engine creation — prefill must run as
@@ -28,6 +32,12 @@ final class PipelinedBackend {
         let hfRemotePath: String   // subpath inside the mode's HF repo
         let label: String          // stats / status line prefix
         let warmupToken: Int32     // any valid id for the 1-token warmup
+        // Manual chat-template fallback (String(format:) with the prompt as
+        // %@) used only when the bundle tokenizer's own template isn't picked
+        // up by swift-transformers. ChatML for the qwen/lfm families; granite
+        // speaks <|start_of_role|>.
+        var fallbackTemplate: String =
+            "<|im_start|>user\n%@<|im_end|>\n<|im_start|>assistant\n"
     }
 
     // nonisolated: referenced from the (nonisolated) GemmaMode enum.
@@ -36,11 +46,23 @@ final class PipelinedBackend {
         hfRemotePath: "gpu-pipelined/qwen3_5_0_8b_decode_int8lin",
         label: "Qwen ⚡pipelined",
         warmupToken: 9707)
+    nonisolated static let qwen2b = Spec(
+        bundleName: "qwen3_5_2b_decode_int8lin",
+        hfRemotePath: "gpu-pipelined/qwen3_5_2b_decode_int8lin",
+        label: "Qwen 2B ⚡pipelined",
+        warmupToken: 9707)
     nonisolated static let lfm2 = Spec(
         bundleName: "lfm2_5_1_2b_instruct_decode_int8lin",
         hfRemotePath: "gpu-pipelined/lfm2_5_1_2b_instruct_decode_int8lin",
         label: "LFM2.5 ⚡pipelined",
         warmupToken: 1098)
+    nonisolated static let granite = Spec(
+        bundleName: "granite_4_0_h_1b_decode_int8lin",
+        hfRemotePath: "gpu-pipelined/granite_4_0_h_1b_decode_int8lin",
+        label: "Granite ⚡pipelined",
+        warmupToken: 5000,
+        fallbackTemplate: "<|start_of_role|>user<|end_of_role|>%@<|end_of_text|>\n"
+            + "<|start_of_role|>assistant<|end_of_role|>")
 
     let spec: Spec
     private var engine: (any InferenceEngine)?
@@ -139,15 +161,15 @@ final class PipelinedBackend {
         return stats
     }
 
-    // Chat template via the bundle tokenizer; manual ChatML fallback if the
-    // template file isn't picked up by swift-transformers (both families speak
-    // ChatML: qwen natively, lfm2 via its <|im_start|>/<|im_end|> markers —
-    // lfm2's bos rides on the tokenizer's own post-processor).
+    // Chat template via the bundle tokenizer; the spec's manual fallback if
+    // the template file isn't picked up by swift-transformers (ChatML for the
+    // qwen/lfm families, role markers for granite — bos rides on each
+    // tokenizer's own post-processor).
     private func templatedIds(_ prompt: String, tokenizer: Tokenizer) throws -> [Int32] {
         if let ids = try? tokenizer.applyChatTemplate(messages: [["role": "user", "content": prompt]]) {
             return ids.map { Int32($0) }
         }
-        let text = "<|im_start|>user\n\(prompt)<|im_end|>\n<|im_start|>assistant\n"
+        let text = String(format: spec.fallbackTemplate, prompt)
         return tokenizer.encode(text: text).map { Int32($0) }
     }
 

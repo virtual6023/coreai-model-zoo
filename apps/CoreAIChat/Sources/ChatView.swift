@@ -28,7 +28,9 @@ struct ChatView: View {
                 switch m {
                 case .gemma: engine.mode = gemmaUnit
                 case .qwen: engine.mode = .qwen
+                case .qwen2b: engine.mode = .qwen2b
                 case .lfm2: engine.mode = .lfm2
+                case .granite: engine.mode = .granite
                 }
             })
     }
@@ -197,7 +199,9 @@ struct ChatView: View {
                     case .gpu: "~4.1"
                     case .ane: "~2.1–4.7"
                     case .qwen: "~1.0"
+                    case .qwen2b: "~2.4"
                     case .lfm2: "~1.5"
+                    case .granite: "~1.2"
                     }
                     Label("Download \(engine.mode.downloadLabel) set (\(size) GB)",
                           systemImage: "arrow.down.circle")

@@ -103,7 +103,11 @@ possible:
 - **Failed cold specializations leave partial e-caches** in the app container that eat device
   disk (~3.5 GB for the 2B) and make every later attempt fail as `NSPOSIXErrorDomain code=2`
   ("No such file or directory") at engine create — an out-of-disk ENOENT chain, not a payload
-  problem. Recovery: uninstall the app (clears the container), reinstall, retry with ≥~4 GB
+  problem. Recovery WITHOUT losing sideloaded bundles: ship a cache-wipe hook that removes
+  `Library/Caches/coreai-cache` before engine creation (CoreAIChat's
+  `GEMMA_CLEAR_SPEC_CACHE=1` — device-verified: after the wipe the same 2B spec completed in
+  20.9 s where every prior attempt ENOENT'd; every model pays one cold re-spec). Last resort:
+  uninstall the app (clears the container incl. all sideloads), reinstall, retry with ≥~4 GB
   free. Diagnose by logging `attributesOfFileSystem` free space from the app.
 
 ## State & precision traps on the GPU delegate (found by the LFM2.5 port)

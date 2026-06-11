@@ -1,8 +1,9 @@
 // CoreAIChat — on-device Core AI LLM chat for iPhone (iOS 27).
-// Single app, one picker, four engines: gemma 4 E2B GPU (kernel monolith) / gemma 4 E2B ANE
+// Single app, one picker, six engines: gemma 4 E2B GPU (kernel monolith) / gemma 4 E2B ANE
 // (host-cache chunks) / Qwen3.5-0.8B ⚡pipelined (50.3-51.5 tok/s on iPhone 17 Pro) /
-// LFM2.5-1.2B ⚡pipelined (38.0-39.6 tok/s) — the pipelined pair rides Apple's
-// coreai-pipelined engine on decode-only loop-free int8lin bundles.
+// Qwen3.5-2B ⚡pipelined / LFM2.5-1.2B ⚡pipelined (38.0-39.6 tok/s) /
+// Granite-4.0-H-1B ⚡pipelined — the pipelined set rides Apple's coreai-pipelined
+// engine on decode-only loop-free int8lin bundles.
 
 import SwiftUI
 
@@ -13,6 +14,25 @@ struct CoreAIChatApp: App {
         WindowGroup {
             ChatView(engine: engine)
                 .task {
+                    // GEMMA_CLEAR_SPEC_CACHE=1: wipe the in-container GPU
+                    // specialization cache before anything loads. The recovery
+                    // for the partial-e-cache trap: an out-of-disk cold
+                    // specialization leaves a partial entry that fails every
+                    // later engine create with NSPOSIXErrorDomain code=2 —
+                    // without this hook the only fix is uninstalling the app
+                    // (losing every sideloaded bundle). Costs one cold
+                    // re-specialization per model.
+                    if ProcessInfo.processInfo.environment["GEMMA_CLEAR_SPEC_CACHE"] == "1" {
+                        let caches = FileManager.default.urls(
+                            for: .cachesDirectory, in: .userDomainMask)[0]
+                        for name in ["coreai-cache", "com.apple.MetalPerformanceShadersGraph"] {
+                            let dir = caches.appendingPathComponent(name)
+                            if FileManager.default.fileExists(atPath: dir.path) {
+                                try? FileManager.default.removeItem(at: dir)
+                                print("[chat] cleared spec cache: \(name)")
+                            }
+                        }
+                    }
                     // De-risk path: GEMMA_SLICE_TEST=1 runs the ISOLATED dual-KV ANE slice self-test
                     // (does the gemma4 iOS port lower+run on the ANE?) and skips the Phase-1 engine.
                     if ProcessInfo.processInfo.environment["GEMMA_SLICE_TEST"] == "1" {

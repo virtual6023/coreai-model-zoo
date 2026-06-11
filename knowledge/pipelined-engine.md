@@ -285,12 +285,12 @@ not rollout identity.
 | iPhone 17 Pro, ship, one-shot runner | 72.0–73.9 | **69.7–74.0** |
 | M4 Max, fp16-head `int8lin` | 198.8 | 204.1 |
 | iPhone 17 Pro, fp16-head `int8lin` | 51.2 | 50.3–51.5 |
-| iPhone 17 Pro, chat app (CoreAIChat Qwen mode = int8lin, 220-tok turn) | 50.6 | 47.9 |
+| iPhone 17 Pro, chat app (CoreAIChat Qwen mode = the ship bundle, 200-tok turn) | 69.0 | **62.3–67.0** |
 
 vs the previous best iPhone config (fused int8 Metal-kernel static monolith, 42.5–45.4):
 the ship config is **~1.6× with zero custom kernels**, and the same bundle runs on macOS
-at 210. (CoreAIChat still downloads the int8lin bundle; switching its default is an
-app-wiring change, tracked separately.)
+at 210. CoreAIChat downloads the ship bundle since 2026-06-11 (chat-surface decode
+62.3–67.0 vs the int8lin default's 47.9, +30–40%).
 
 ## What fits next / what doesn't
 

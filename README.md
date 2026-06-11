@@ -19,7 +19,7 @@ on-device, with the conversion code and a knowledge base. Successor to
 | | iPhone 17 Pro · GPU | iPhone 17 Pro · ANE | M4 Max · GPU |
 |---|---|---|---|
 | **Qwen3.5-0.8B** | **50.3–51.5 tok/s**<br><sub>int8 linear · loop-free × pipelined engine (shipped app: int8 fused kernels 42.5–45.4 · prefill 147 tok/s q16 chunks)</sub> | **14.7 tok/s**<br><sub>int8 · dynamic</sub> | **204 tok/s**<br><sub>int8 linear · loop-free × pipelined engine (custom-kernel CLI: 58.5)</sub> |
-| **Qwen3.5-2B** | 19–21 tok/s<br><sub>runs (24/24 ≡ Mac-GPU; needs the increased-memory entitlement) — the CoreML-2B port (~27) is still faster on phone → Mac-recommended</sub> | — | **127 tok/s**<br><sub>int8 linear · loop-free × pipelined engine</sub> |
+| **Qwen3.5-2B** | **28–30 tok/s**<br><sub>int8 + per-channel absmax int8 head · ≥ CoreML-2B (~27) · 24/24 ≡ Mac-GPU (needs the increased-memory entitlement)</sub> | — | **161 tok/s**<br><sub>int8 + per-channel absmax int8 head · loop-free × pipelined engine (fp16-head int8lin: 127)</sub> |
 | **LFM2.5-1.2B** | **38.0–39.6 tok/s**<br><sub>int8 linear · pipelined engine (~87% of naive BW ceiling; 24/24 ≡ Mac-GPU)</sub> | — | **253 tok/s**<br><sub>int8 linear · pipelined engine — first non-Qwen rider (fp16: 162)</sub> |
 | **Granite 4.0-H 1B** | **30.2–31.3 tok/s**<br><sub>int8 linear · pipelined engine (~84% of naive BW ceiling; 24/24 ≡ Mac-GPU)</sub> | — | **136.5 tok/s**<br><sub>int8 linear · pipelined engine — first Mamba2 SSM rider (fp16: 103.6; 350m fp16: 191)</sub> |
 | **Gemma 4 E2B** | **22 tok/s**<br><sub>int4 k-means kernels</sub> | **6 tok/s**<br><sub>int8 · 6 chunks</sub> | **56.6–59.0 tok/s**<br><sub>int8 kernels</sub> |

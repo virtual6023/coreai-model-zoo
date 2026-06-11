@@ -125,7 +125,7 @@ fp16×pipelined was correctly predicted to lose (~44 ceiling) and was not run.
 Export: [`../conversion/export_qwen3_5_decode_pipelined.py`](../conversion/export_qwen3_5_decode_pipelined.py)
 (`int8lin` default; `fp16` / `int8` k-means / `int8hu` untied-head for comparison).
 
-### Qwen3.5-2B on the same fast path: 127 tok/s on M4 Max
+### Qwen3.5-2B on the same fast path: 161 tok/s on M4 Max, 28–30 on iPhone
 
 The 2B is architecturally identical (24 layers = 18 linear + 6 full attention, hidden
 2048), so the decode-only loop-free export and the extra-states patch carry over with
@@ -134,17 +134,22 @@ release `llm-benchmark`, `COREAI_CHUNK_THRESHOLD=1`):
 
 | config | bundle | prefill tok/s | decode tok/s | numerics |
 |---|---:|---:|---:|---|
-| **int8 linear per-block-32 (ship)** | **2.3 GB** | 127.0 | **127.2** | 16/16 single-step top-1 vs the fp32 HF oracle + HF-cache-seeded decode step (cos 0.99999) |
+| **int8lin + per-channel absmax int8 head (ship)** — `int8hu --head-quant perchan --head-sym` | 2.9 GB | 161.2 | **160.8** | 16/16 single-step top-1 vs the fp32 HF oracle + HF-cache-seeded decode step; greedy rollouts token-identical to int8lin |
+| int8 linear per-block-32, fp16 head (`int8lin`) | 2.3 GB | 127.0 | 127.2 | 16/16 + decode step (cos 0.99999) |
 | fp16 | 3.5 GB | 91.2 | 90.9 | 16/16 + decode step (cos 0.999999) |
-| + untied int8 lm_head (`int8hu`) | 2.8 GB | 151.1 | 159.1 | **FAILS the gate (10/16)** — not shippable |
+| + int8 head, block-32 **with clipping** (`int8hu`) | 2.8 GB | 151.1 | 159.1 | **FAILS the gate (10/16)** — see below |
 | int4 **linear** per-block-32 (`int4lin`) | 1.7 GB | 156.2 | 156.0 | **FAILS the gate (10/16 AND the HF-seeded decode step**, top-1 561≠220, cos 0.9955**)** |
 
-The `int8hu` row is the opposite of the 0.8B finding (there: gate PASS, no speed
-win): on the 2B the fp16 tied head is ~1.0 GB of the ~2.4 GB per-token read, so
-quantizing it is worth **+25%** — but the 248 K-vocab head flips 6/16 oracle
-top-1s at int8 per-block-32. A quality-preserving head compression (k-means-g32
-head, finer blocks, or fp8 via TensorOps) is the open lever for both Mac (~159)
-and iPhone (~26, CoreML parity).
+**The head was the lever, and the killer was the clipping, not the bits**: the
+2B's fp16 tied head is ~1.0 GB of the ~2.4 GB per-token read, and quantizing it
+is worth +26% — but with the default `symmetric_with_clipping` qscheme the
+248 K-vocab head flips 6/16 oracle top-1s, with a tell-tale signature (one
+position craters to cos 0.62 while its neighbors sit at 0.999x — outlier head
+rows getting clipped, not uniform noise; the 0.8B's smaller head tolerated the
+same recipe). Switching the head to plain **absmax `symmetric`** fixes it at
+ANY granularity tried — per-channel (axis 0) and per-block-32 both gate 16/16
+at the same ~161 tok/s. Per-channel is the ship pick (0.5 MB of scales vs
+30 MB, conceptually the right shape for a matvec head).
 
 The `int4lin` row closes the int4 question **for both quantizer families**: the
 0.8B failed int4 as k-means (g32, and g8 + int8 rescue variants); the 2B now
@@ -156,18 +161,19 @@ sensitivity is a property of this GDN hybrid, not of the toolchain). It is not
 even faster than `int8hu` (156 vs 159): int4-linear dequant underuses bandwidth
 on this delegate, matching the gemma4 int4lin observation.
 
-**Mac-recommended; runs on iPhone too** (device-measured, iPhone 17 Pro
-2026-06-11): decode **19.1–21.3 tok/s** (prefill ≈ same, S=1) with perfect
-numerics (nat + oracle 24/24, token-identical to the Mac-GPU engine) — the same
-bundle serves both platforms. On the phone it needs the
+**iPhone 17 Pro (device-measured 2026-06-11): the ship config decodes
+28–30 tok/s** (4 trials over 2 runs: 29.5/28.3/30.2/25.8, prefill ≈ same at
+S=1) with perfect numerics (nat + oracle 24/24, token-identical to the Mac-GPU
+engine) — **at or above the CoreML 2B port (~27)**, and the same bundle does
+161 on the Mac. The earlier fp16-head `int8lin` measured 19.1–21.3 (decode is
+fully bandwidth-bound; dropping the 1.0 GB fp16 head read is what closed the
+gap). Phone requirements: the
 `com.apple.developer.kernel.increased-memory-limit` entitlement (cold GPU
-specialization `std::bad_alloc` without it) plus ~3.5 GB of free disk for the
-specialization cache (cold spec 29.1 s, warm load 3.0 s), and the CoreML 2B
-port (~27 tok/s) is still the faster phone option — decode is fully
-bandwidth-bound and the fp16 tied lm_head alone is ~1.0 GB of the ~2.4 GB read
-per token. Trap for big bundles: failed cold specializations leave partial
-caches that eat disk and turn later attempts into `NSPOSIXErrorDomain code=2`
-at engine create — uninstall the app to reclaim.
+specialization `std::bad_alloc` without it) and ~4 GB of free disk for the
+specialization cache (ship bundle: cold spec 22.3 s, warm load 5.6 s). Trap
+for big bundles: failed cold specializations leave partial caches that eat
+disk and turn later attempts into `NSPOSIXErrorDomain code=2` at engine
+create — uninstall the app to reclaim.
 
 ## Conversion status (macOS, vs HF eager)
 

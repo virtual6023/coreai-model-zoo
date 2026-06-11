@@ -126,10 +126,17 @@ def main() -> None:
     ap.add_argument("--hf-id", default="Qwen/Qwen3.5-0.8B")
     ap.add_argument("--out-dir", default="exports")
     ap.add_argument("--max-ctx", type=int, default=4096)
+    ap.add_argument("--head-quant", default="block32",
+                    choices=["block32", "block16", "block8", "perchan"],
+                    help="int8hu only: lm_head weight granularity")
+    ap.add_argument("--head-sym", action="store_true",
+                    help="int8hu only: plain symmetric (absmax, no clipping) for the head")
     args = ap.parse_args()
 
     short = args.hf_id.rsplit("/", 1)[-1].lower().replace(".", "_").replace("-", "_")
     name = f"{short}_decode_{args.mode}"
+    if args.mode == "int8hu" and (args.head_quant != "block32" or args.head_sym):
+        name += f"_{args.head_quant}" + ("_sym" if args.head_sym else "")
 
     print(f"loading {args.hf_id} fp16 ...")
     model = Qwen3_5StatefulForCausalLM.from_hf_memory_efficient(

@@ -96,7 +96,7 @@ possible:
   work dominates unoptimized Swift).
 - Cold GPU specialization of the 0.8B bundle: ~4.8 s on iPhone, then ~0.2–1.0 s warm loads
   (content-keyed cache) — no AOT needed on this path. The 2.3 GB 2B bundle: 29.1 s cold,
-  3.0 s warm.
+  3.0 s warm; the 2.9 GB 2B ship bundle (int8 head): 22.3 s cold, 5.6 s warm.
 - **2B-class bundles (≥~2 GB) need the `com.apple.developer.kernel.increased-memory-limit`
   entitlement on iPhone** — cold specialization dies with `std::bad_alloc` (SIGABRT) at the
   default jetsam limit. With the entitlement the same spec completes.
@@ -172,10 +172,19 @@ and int4-linear's BW win is shape-dependent (LFM +24%, gemma4 +24%, qwen-2B ~fla
 The eager quantizer
 **silently skips tied weights** — clone the embedding table first if you actually want the
 head quantized, and measure + gate before believing it helps: untied int8 head was a no-win
-on the 0.8B (204→201, head not critical path) but on the 2B it's **+25% (127→159) yet flips
-6/16 oracle top-1s** — the 248K-vocab fp16 head is ~43% of the 2B's per-token read, so a
-quality-preserving head compression (km-g32 head / finer blocks / fp8) is that model's open
-lever; on gemma4's 262K vocab the (int4-tolerant) head quantizes fine and matters.
+on the 0.8B (204→201, head not critical path) but on the 2B it's **+26% (127→161)** — the
+248K-vocab fp16 head is ~43% of the 2B's per-token read.
+**Big-vocab heads: quantize with absmax `symmetric`, never `symmetric_with_clipping`**
+(RESOLVED 2026-06-11): with the default clipping qscheme the 2B head flips 6/16 oracle
+top-1s with a tell-tale signature — one sweep position craters to cos 0.62 while neighbors
+sit at 0.999x = outlier head rows clipped, not uniform noise. Plain `symmetric` gates 16/16
+at identical speed at BOTH granularities tried (per-channel axis-0 AND per-block-32) — the
+killer was the clipping, not the bits or the block shape. Ship shape: per-channel axis-0
+(one scale per vocab row, 0.5 MB vs 30 MB of block scales). Measured
+(`int8hu --head-quant perchan --head-sym`): **161 tok/s M4 Max, 28–30 tok/s iPhone 17 Pro
+(≥ the CoreML-2B port's ~27)**, greedy rollouts token-identical to the fp16-head bundle.
+The transformer body is fine WITH clipping (int8lin gates 16/16 everywhere) — this rule is
+specifically about fat-tailed embedding/head tables.
 
 ## Numerics gating (how to judge a quantized bundle)
 
@@ -236,10 +245,10 @@ vs the best previous iPhone config (fused int8 Metal-kernel static monolith): 42
   attention shows no fp16 amplification, see
   [`../zoo/granite-4.0-h.md`](../zoo/granite-4.0-h.md)), GDN hybrids (qwen3.5 family incl. 2B —
   **verified 2026-06-11, Mac AND iPhone**: same script via `--hf-id Qwen/Qwen3.5-2B`, zero new
-  work, int8lin **127 tok/s** / fp16 90.9 on M4 Max, oracle gate 16/16 both; iPhone measured
-  **19.1–21.3 tok/s** with 24/24 ≡ Mac-GPU numerics — runs fine but needs the
-  increased-memory entitlement and the CoreML-2B port (~27) is still faster on phone →
-  **Mac-recommended**).
+  work; ship config adds the per-channel absmax int8 head → **161 tok/s M4 Max,
+  28–30 tok/s iPhone** (≥ the CoreML-2B port's ~27), oracle gate 16/16, 24/24 ≡ Mac-GPU
+  on device; fp16-head int8lin = 127/19–21; needs the increased-memory entitlement on
+  phone).
 - **Fits with the per-token-inputs patch**: per-token host-gathered inputs — **verified
   2026-06-11 on Gemma-4-E2B, Mac AND iPhone**: PLE rows ride as a `ple_tokens [1,1,35,256]`
   input filled by an mmap provider; unified single KV pair (15 non-shared slots padded to

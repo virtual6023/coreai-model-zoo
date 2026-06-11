@@ -37,7 +37,13 @@ struct ChatView: View {
 
     private var unitSelection: Binding<GemmaMode> {
         Binding(
-            get: { engine.mode == .ane ? .ane : .gpu },
+            get: {
+                switch engine.mode {
+                case .ane: .ane
+                case .gemmaTbl: .gemmaTbl
+                default: .gpu
+                }
+            },
             set: { u in
                 gemmaUnit = u
                 engine.mode = u
@@ -64,7 +70,7 @@ struct ChatView: View {
             .safeAreaInset(edge: .top) { topBar }
             .safeAreaInset(edge: .bottom) { inputBar }
         }
-        // Mode switch (gemma GPU monolith / gemma ANE chunks / qwen / lfm2 pipelined): point the
+        // Mode switch (gemma GPU monolith / ANE chunks / ⚡tbl, or a pipelined model): point the
         // download field at that mode's HF repo (unless GEMMA_REPO pins it) and reload.
         .onChange(of: engine.mode) { _, m in
             if ProcessInfo.processInfo.environment["GEMMA_REPO"] == nil {
@@ -75,7 +81,8 @@ struct ChatView: View {
         // Raise the keyboard on launch (typing is allowed while the model loads; Send stays gated).
         .onAppear {
             inputFocused = true
-            if engine.mode == .ane { gemmaUnit = .ane }  // headless GEMMA_ENGINE=ane start
+            // headless GEMMA_ENGINE=ane/gemmatbl start: keep the segment in sync
+            if engine.mode.chatModel == .gemma { gemmaUnit = engine.mode }
             if ProcessInfo.processInfo.environment["GEMMA_REPO"] == nil {
                 repoURL = Gemma4ChatEngine.defaultRepo(for: engine.mode)
             }
@@ -105,14 +112,16 @@ struct ChatView: View {
             .pickerStyle(.menu)
             .disabled(engine.busy || engine.loading)
             Spacer()
-            // ... then the compute unit, only where there is a choice (gemma).
+            // ... then the engine, only where there is a choice (gemma:
+            // GPU kernel monolith / ANE chunks / ⚡pipelined static-table).
             if engine.mode.chatModel == .gemma {
                 Picker("Compute", selection: unitSelection) {
                     Text("GPU").tag(GemmaMode.gpu)
                     Text("ANE").tag(GemmaMode.ane)
+                    Text("⚡").tag(GemmaMode.gemmaTbl)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 104)
+                .frame(width: 148)
                 .disabled(engine.busy || engine.loading)
             }
             Text(engine.status)
@@ -198,7 +207,8 @@ struct ChatView: View {
                     let size = switch engine.mode {
                     case .gpu: "~4.1"
                     case .ane: "~2.1–4.7"
-                    case .qwen: "~1.0"
+                    case .gemmaTbl: "~2.0–4.8"
+                    case .qwen: "~1.3"
                     case .qwen2b: "~2.4"
                     case .lfm2: "~1.5"
                     case .granite: "~1.2"

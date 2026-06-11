@@ -3,16 +3,24 @@
 // sampling, on-device KV growth, zero custom kernels. One class drives every
 // pipelined chat model; `Spec` picks the bundle (downloaded from HF into
 // Documents/models/):
-//   * Qwen3.5-0.8B int8lin — 50.3–51.5 tok/s decode on iPhone 17 Pro
-//     (vs 42.5–45.4 for the fused-kernel static monolith)
+//   * Qwen3.5-0.8B int8hu — 69.7–74.0 tok/s decode on iPhone 17 Pro (absmax
+//     int8 head; the HF dir is named perchan_sym but the content is
+//     per-block-32 — vs 50.3–51.5 for int8lin, 42.5–45.4 for the kernel
+//     monolith)
 //   * LFM2.5-1.2B int8lin  — 38.0–39.6 tok/s decode (~87% of the naive BW
 //     ceiling; conv+attention hybrid, first non-Qwen rider)
 //   * Qwen3.5-2B int8lin   — 19–21 tok/s decode; the 2.4 GB bundle needs the
 //     increased-memory entitlement (this app has it) and pays a ~30 s cold
 //     GPU specialization on first load
 //   * Granite-4.0-H-1B int8lin — Mamba2+attention hybrid (first SSM-scan rider)
-// Requires the engine extra-states patch on the local coreai-models package
-// (the fixed-shape extra states: SSM conv/rec, lfm2's conv columns).
+//   * Gemma 4 E2B int4lin tbl  — 30.3 tok/s decode / 38.9 prefill settled (vs
+//     22–24 for the kernel monolith): the 2.35 GB per-layer-embedding table
+//     rides as a STATIC graph input (in-graph gather), bound once as owned
+//     MTLBuffers via EngineOptions.staticInputBuffers; the bundle is AOT
+//     h18p (.aimodelc) because on-device specialization dies on this graph.
+// Requires the engine patch stack on the local coreai-models package
+// (extra states / per-token inputs / static inputs — see
+// coreai-models-community/apps/README.md).
 //
 // Engine contract for these bundles (input_ids is STATIC [1,1]):
 //   * COREAI_CHUNK_THRESHOLD=1 before engine creation — prefill must run as
@@ -23,6 +31,7 @@
 import CoreAILanguageModels
 import CoreAIShared
 import Foundation
+import Metal
 import Tokenizers
 
 @MainActor
@@ -35,15 +44,32 @@ final class PipelinedBackend {
         // Manual chat-template fallback (String(format:) with the prompt as
         // %@) used only when the bundle tokenizer's own template isn't picked
         // up by swift-transformers. ChatML for the qwen/lfm families; granite
-        // speaks <|start_of_role|>.
+        // speaks <|start_of_role|>; gemma needs an explicit <bos> (its
+        // tokenizer post-processor doesn't add one).
         var fallbackTemplate: String =
             "<|im_start|>user\n%@<|im_end|>\n<|im_start|>assistant\n"
+        // Static graph inputs (gemma tbl): graph input name -> file inside
+        // `staticInputDir`, a sibling of the bundle under Documents/models/.
+        // Each file is read ONCE into an owned storageModeShared MTLBuffer and
+        // handed to the engine via EngineOptions(staticInputBuffers:) — bound
+        // unchanged on every encode. Owned beats mmap here: file-backed
+        // no-copy buffers pay a per-encode residency tax on iOS (~6-7 ms/GB)
+        // and a read-only mapping costs ~65 ms/GB/encode on macOS. Owned
+        // bytes are dirty memory against the jetsam limit — this app ships
+        // the increased-memory-limit entitlement.
+        var staticInputDir: String? = nil
+        var staticInputFiles: [String: String]? = nil
+        // Stop ids beyond the tokenizer's eos (gemma ends turns with
+        // <end_of_turn> 106 while its tokenizer's eos is <eos> 1).
+        var stopTokens: Set<Int> = []
     }
 
     // nonisolated: referenced from the (nonisolated) GemmaMode enum.
+    // v2 ship bundle (absmax int8 head). An older int8lin dir may still sit in
+    // Documents/models — it is simply no longer referenced, not deleted.
     nonisolated static let qwen = Spec(
-        bundleName: "qwen3_5_0_8b_decode_int8lin",
-        hfRemotePath: "gpu-pipelined/qwen3_5_0_8b_decode_int8lin",
+        bundleName: "qwen3_5_0_8b_decode_int8hu_perchan_sym",
+        hfRemotePath: "gpu-pipelined/qwen3_5_0_8b_decode_int8hu_perchan_sym",
         label: "Qwen ⚡pipelined",
         warmupToken: 9707)
     nonisolated static let qwen2b = Spec(
@@ -63,10 +89,25 @@ final class PipelinedBackend {
         warmupToken: 5000,
         fallbackTemplate: "<|start_of_role|>user<|end_of_role|>%@<|end_of_text|>\n"
             + "<|start_of_role|>assistant<|end_of_role|>")
+    // AOT h18p .aimodelc (iPhone 17 Pro class) — the 2.0 GB-constants graph
+    // crashes the on-device specializer; the PLE table set is the one the
+    // gemma GPU/ANE modes already download (gemma4_gather_raw).
+    nonisolated static let gemmaTbl = Spec(
+        bundleName: "gemma4_e2b_decode_int4lin_tbl_aotc",
+        hfRemotePath: "gpu-pipelined/gemma4_e2b_decode_int4lin_tbl_aotc_h18p",
+        label: "Gemma ⚡pipelined",
+        warmupToken: 2364,
+        fallbackTemplate: "<bos><start_of_turn>user\n%@<end_of_turn>\n<start_of_turn>model\n",
+        staticInputDir: "gemma4_gather_raw",
+        staticInputFiles: ["ple_table": "embed_per_layer.i8",
+                           "ple_scale": "embed_per_layer.scale.f32"],
+        stopTokens: [106])
 
     let spec: Spec
     private var engine: (any InferenceEngine)?
     private var tokenizer: Tokenizer?
+    // Owned static-table buffers, kept alive for the engine's lifetime.
+    private var tableBuffers: [String: StaticInputBuffer] = [:]
     private(set) var ctx = 4096
 
     init(spec: Spec) { self.spec = spec }
@@ -93,9 +134,29 @@ final class PipelinedBackend {
             setenv("COREAI_CHUNK_THRESHOLD", "1", 1)
         }
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let dir = docs.appendingPathComponent("models").appendingPathComponent(spec.bundleName)
+        let models = docs.appendingPathComponent("models")
+        let dir = models.appendingPathComponent(spec.bundleName)
         let bundle = try LanguageBundle(at: dir)
         ctx = bundle.maxContextLength
+
+        if let files = spec.staticInputFiles, let dirName = spec.staticInputDir {
+            guard let device = MTLCreateSystemDefaultDevice() else {
+                throw Self.err("no Metal device")
+            }
+            let tableDir = models.appendingPathComponent(dirName)
+            var buffers: [String: StaticInputBuffer] = [:]
+            for (input, file) in files {
+                let url = tableDir.appendingPathComponent(file)
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    throw Self.err("missing static-input table \(dirName)/\(file)")
+                }
+                buffers[input] = StaticInputBuffer(try Self.ownedBuffer(url: url, device: device))
+            }
+            tableBuffers = buffers
+            let total = buffers.values.reduce(0) { $0 + $1.buffer.length }
+            print(String(format: "[pipelined] static tables %@ (%.2f GB owned)",
+                         buffers.keys.sorted().joined(separator: ", "), Double(total) / 1e9))
+        }
 
         let config = ModelConfig(
             name: bundle.name,
@@ -107,18 +168,21 @@ final class PipelinedBackend {
         )
         let engine = try await EngineFactory.createEngine(
             config: try JSONEncoder().encode(config),
-            modelURL: try bundle.requireModelURL(for: ModelBundle.ComponentKey.main)
+            modelURL: try bundle.requireModelURL(for: ModelBundle.ComponentKey.main),
+            options: EngineOptions(staticInputBuffers: tableBuffers)
         )
         self.engine = engine
         self.tokenizer = try await bundle.loadTokenizer()
 
         // queryLength=1 warmup: one throwaway token through the real graph.
         _ = try await run(ids: [spec.warmupToken], maxTokens: 1, eos: nil, onText: { _ in })
+        print(Self.memLine("\(spec.label) loaded"))
     }
 
     func unload() {
         engine = nil
         tokenizer = nil
+        tableBuffers = [:]
     }
 
     // Chat-templated greedy generation, streaming decoded text via onUpdate.
@@ -127,9 +191,11 @@ final class PipelinedBackend {
         let ids = try templatedIds(prompt, tokenizer: tokenizer)
         guard ids.count < ctx - 1 else { throw Self.err("prompt (\(ids.count) tok) does not fit ctx \(ctx)") }
         let budget = min(maxNew, ctx - ids.count - 1)
-        return try await run(ids: ids, maxTokens: budget, eos: tokenizer.eosTokenId) { gen in
+        let stats = try await run(ids: ids, maxTokens: budget, eos: tokenizer.eosTokenId) { gen in
             onUpdate(tokenizer.decode(tokens: gen, skipSpecialTokens: true))
         }
+        print(Self.memLine("\(spec.label) gen"))
+        return stats
     }
 
     private func run(
@@ -154,6 +220,7 @@ final class PipelinedBackend {
             let tok = Int(step.tokenId)
             stats.decodeTok += 1
             if let eos, tok == eos { break }
+            if spec.stopTokens.contains(tok) { break }
             gen.append(tok)
             onText(gen)
         }
@@ -177,6 +244,42 @@ final class PipelinedBackend {
         let d = SuspendingClock.now - start
         let (secs, atto) = d.components
         return Double(secs) + Double(atto) / 1e18
+    }
+
+    // Whole file into an OWNED storageModeShared buffer (see Spec.staticInputDir
+    // for why owned beats mmap on both platforms).
+    private static func ownedBuffer(url: URL, device: MTLDevice) throws -> MTLBuffer {
+        let fd = open(url.path, O_RDONLY)
+        guard fd >= 0 else { throw err("cannot open \(url.lastPathComponent)") }
+        defer { close(fd) }
+        let size = Int(lseek(fd, 0, SEEK_END))
+        _ = lseek(fd, 0, SEEK_SET)
+        guard size > 0, let buf = device.makeBuffer(length: size, options: .storageModeShared)
+        else { throw err("makeBuffer failed for \(url.lastPathComponent) (\(size) bytes)") }
+        var done = 0
+        while done < size {
+            let n = read(fd, buf.contents() + done, min(1 << 27, size - done))
+            guard n > 0 else { throw err("read failed for \(url.lastPathComponent)") }
+            done += n
+        }
+        return buf
+    }
+
+    /// "MEM <tag> footprint=X.XX GB headroom=Y.YY GB" — jetsam diagnostics
+    /// (gemma tbl binds ~2.35 GB of owned tables; generation peaks ~4.4 GB
+    /// against the entitled ~6.4 GB limit on a 12 GB iPhone).
+    static func memLine(_ tag: String) -> String {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        let footprint = kr == KERN_SUCCESS ? Double(info.phys_footprint) / 1e9 : -1
+        let headroom = Double(os_proc_available_memory()) / 1e9
+        return String(format: "MEM %@ footprint=%.2f GB headroom=%.2f GB", tag, footprint, headroom)
     }
 
     private static func err(_ msg: String) -> Error {

@@ -60,6 +60,16 @@ engine patches in [`../apps/`](../apps/), full method + traps in
   (19.8 vs 30.3 ten minutes apart); buffer-mode traps in the knowledge page.
 - Both beat the kernel monolith row above on device (22–24), with on-device KV growth
   and on-GPU argmax for free.
+- **Chat-surface (CoreAIChat ⚡ mode, `--tbl` config, 200-token turn): decode 32.7 /
+  prefill 44.2 tok/s** on a settled iPhone 17 Pro — the app binds the two PLE table files
+  it already downloads for the kernel modes (`ios-frontend/gemma4_gather_raw/`) as owned
+  `staticInputBuffers` (~2.35 GB dirty; generation footprint ~3.4 GB, ~3 GB headroom under
+  the entitled limit). First load in a container ingests the ~2 GB AOT executable into the
+  content-keyed cache (engine load ~11 s; ~6 s warm) and the first process pays the
+  executable page-in on its first prefill (~13 tok/s once) — later turns run at full
+  speed. The ingest can invalidate sibling models' cached specializations in the same
+  container (one wipe + re-spec cycle — see the run contract in
+  [`../knowledge/pipelined-engine.md`](../knowledge/pipelined-engine.md)).
 
 ### What it took (the interesting parts)
 

@@ -1,17 +1,18 @@
 // Gemma4ChatEngine — the RELEASE UI engine: user-selectable modes over the device-verified
 // paths, one chat surface.
 //
-//   GPU  -> Gemma4MonolithBackend (metal-kernel host-cache monolith + head-argmax kernel, 8/8)
-//   ANE  -> Gemma4ChunkBackend    (6-chunk host-cache + on-ANE argmax head, 8/8)
-//   Qwen -> PipelinedBackend(.qwen) (Qwen3.5-0.8B int8lin, coreai-pipelined engine)
-//   LFM  -> PipelinedBackend(.lfm2) (LFM2.5-1.2B int8lin, coreai-pipelined engine)
+//   GPU    -> Gemma4MonolithBackend (metal-kernel host-cache monolith + head-argmax kernel, 8/8)
+//   ANE    -> Gemma4ChunkBackend    (6-chunk host-cache + on-ANE argmax head, 8/8)
+//   Gemma⚡ -> PipelinedBackend(.gemmaTbl) (Gemma 4 E2B int4lin, PLE table as static input)
+//   Qwen   -> PipelinedBackend(.qwen) (Qwen3.5-0.8B int8hu, coreai-pipelined engine)
+//   LFM    -> PipelinedBackend(.lfm2) (LFM2.5-1.2B int8lin, coreai-pipelined engine)
 //
 // Mode switch frees the current backend's models before loading the other (the sets together
 // approach the jetsam ceiling). Each generate() resets the host-owned KV and prefills the current
 // user message only (single-turn semantics, same as the verified harnesses).
 //
 // Headless hooks (devicectl process launch --console --environment-variables):
-//   GEMMA_ENGINE = gpu (default) | ane | qwen | lfm2   initial mode
+//   GEMMA_ENGINE = gpu (default) | ane | gemmatbl | qwen | lfm2 ...   initial mode
 //   GEMMA_VERIFY = 1                        drive the HF-oracle ids through the SELECTED release
 //                                           engine, print match n/8 (the release-path 8/8 check)
 //   GEMMA_PROMPT / GEMMA_N                  generate + print output, tok/s, per-token profile
@@ -45,16 +46,16 @@ enum ChatModel: String, CaseIterable, Identifiable {
 
 // Engine-selection enum (model × compute unit flattened): the storage type the
 // whole engine layer is keyed on, and the headless GEMMA_ENGINE vocabulary
-// (gpu / ane / qwen / qwen2b / lfm2 / granite). The UI splits it into
-// ChatModel + a gemma-only GPU/ANE segment.
+// (gpu / ane / gemmatbl / qwen / qwen2b / lfm2 / granite). The UI splits it
+// into ChatModel + a gemma-only GPU/ANE/⚡ segment.
 enum GemmaMode: String, CaseIterable, Identifiable {
-    case gpu = "GPU", ane = "ANE", qwen = "Qwen", qwen2b = "Qwen2B",
-         lfm2 = "LFM", granite = "Granite"
+    case gpu = "GPU", ane = "ANE", gemmaTbl = "Gemma⚡", qwen = "Qwen",
+         qwen2b = "Qwen2B", lfm2 = "LFM", granite = "Granite"
     var id: String { rawValue }
     /// The model family this engine mode belongs to (the picker's top level).
     var chatModel: ChatModel {
         switch self {
-        case .gpu, .ane: .gemma
+        case .gpu, .ane, .gemmaTbl: .gemma
         case .qwen: .qwen
         case .qwen2b: .qwen2b
         case .lfm2: .lfm2
@@ -66,6 +67,7 @@ enum GemmaMode: String, CaseIterable, Identifiable {
         switch self {
         case .gpu: "Gemma 4 E2B · GPU"
         case .ane: "Gemma 4 E2B · ANE"
+        case .gemmaTbl: "Gemma 4 E2B · ⚡"
         case .qwen: "Qwen3.5 0.8B"
         case .qwen2b: "Qwen3.5 2B"
         case .lfm2: "LFM2.5 1.2B"
@@ -75,6 +77,7 @@ enum GemmaMode: String, CaseIterable, Identifiable {
     /// Non-nil for the modes that ride the coreai-pipelined engine.
     var pipelinedSpec: PipelinedBackend.Spec? {
         switch self {
+        case .gemmaTbl: PipelinedBackend.gemmaTbl
         case .qwen: PipelinedBackend.qwen
         case .qwen2b: PipelinedBackend.qwen2b
         case .lfm2: PipelinedBackend.lfm2
@@ -104,6 +107,7 @@ final class Gemma4ChatEngine: ObservableObject {
     init() {
         switch ProcessInfo.processInfo.environment["GEMMA_ENGINE"] {
         case "ane": mode = .ane
+        case "gemmatbl": mode = .gemmaTbl
         case "qwen": mode = .qwen
         case "qwen2b": mode = .qwen2b
         case "lfm2", "lfm": mode = .lfm2
@@ -124,9 +128,8 @@ final class Gemma4ChatEngine: ObservableObject {
         case .qwen: "https://huggingface.co/mlboydaisuke/qwen3.5-0.8B-CoreAI"
         case .qwen2b: "https://huggingface.co/mlboydaisuke/qwen3.5-2B-CoreAI"
         case .lfm2: "https://huggingface.co/mlboydaisuke/LFM2.5-1.2B-CoreAI"
-        // Granite bundle upload is pending — sideload until the repo is live.
-        case .granite: "https://huggingface.co/mlboydaisuke/granite-4.0-h-1b-CoreAI"
-        case .gpu, .ane: "https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI"
+        case .granite: "https://huggingface.co/mlboydaisuke/granite-4.0-h-CoreAI"
+        case .gpu, .ane, .gemmaTbl: "https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI"
         }
     }
 
@@ -140,6 +143,11 @@ final class Gemma4ChatEngine: ObservableObject {
         case .qwen, .qwen2b, .lfm2, .granite:
             let spec = mode.pipelinedSpec!
             paths = [(spec.hfRemotePath, spec.bundleName)]
+        case .gemmaTbl:
+            // AOT engine bundle + the PLE table set the GPU/ANE modes already share.
+            let spec = mode.pipelinedSpec!
+            paths = [(spec.hfRemotePath, spec.bundleName),
+                     ("ios-frontend/gemma4_gather_raw", "gemma4_gather_raw")]
         case .gpu:
             paths = [("ios-frontend/gemma4_gather_raw", "gemma4_gather_raw"),
                      ("ios-gpu/gemma4_e2b_metal_int4km_L35.aimodel", "gemma4_e2b_metal_int4km_L35.aimodel"),

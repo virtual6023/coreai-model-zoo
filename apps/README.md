@@ -5,7 +5,7 @@ HF eager reference) on an iPhone 17 Pro running the iOS 27 beta:
 
 | App | Model | Decode (iPhone 17 Pro) |
 |---|---|---|
-| [`CoreAIChat/`](CoreAIChat/) | **Gemma 4 E2B** (text) — mmap embedding/PLE gather front-end → 35-layer core → head — **plus Qwen3.5-0.8B ⚡pipelined**, one Gemma-GPU / Gemma-ANE / Qwen segmented picker | **Gemma GPU 22 tok/s** (int4-k-means kernels) / **ANE 6** (int8 chunks) / **Qwen ⚡ 50.3–51.5 tok/s** (benchmark; ~48 chat-surface — int8lin on Apple's `coreai-pipelined` engine, zero custom kernels) |
+| [`CoreAIChat/`](CoreAIChat/) | **Gemma 4 E2B** (text) with a GPU / ANE / ⚡ engine segment, **plus the ⚡pipelined model menu**: Qwen3.5-0.8B / Qwen3.5-2B / LFM2.5-1.2B / Granite-4.0-H-1B (one spec-parameterized `PipelinedBackend` drives them all) | **Gemma GPU 22 tok/s** (int4-k-means kernels) / **ANE 6** (int8 chunks) / **Gemma ⚡ 32.7 chat-surface** (int4lin, PLE table as a static graph input) / **Qwen ⚡ 50.3–51.5** (benchmark; ~48 chat-surface) / **LFM ⚡ ~36** / **Granite ⚡ ~32** — the ⚡ set rides Apple's `coreai-pipelined` engine, zero custom kernels |
 | [`QwenChatFast/`](QwenChatFast/) | **Qwen3.5-0.8B** (hybrid linear+full attention) — static-shape loop-free decode, fused int8 Metal kernels + GPU argmax head, q16 chunked prefill, host-managed KV + SSM conv/rec state | **GPU 42.5–45.4 tok/s** decode · **147 tok/s** prefill (int8 kernels, ctx 2048; `QWEN_KIND=fp16` selects the previous fp16 path, 27.7) |
 
 Measured numbers, bundle sizes, and per-config caveats live in the zoo cards:
@@ -67,13 +67,18 @@ dominates in Debug; e.g. 10.3 vs 30.4 tok/s on the same artifact).
   switch frees one model set before loading the other), qwen = `FastEngine` (static-shape
   single-step graph; the 4 state arrays are host-managed, and NDArray views are function-local
   `inout` — class-property state trips MutableViews lifetime checks).
-- CoreAIChat's **Qwen ⚡ mode** is different: `QwenPipelinedBackend` hands the whole generation
-  to Apple's `coreai-pipelined` engine (`EngineFactory` over the `gpu-pipelined/` LanguageBundle
-  — async non-blocking encode, on-GPU argmax, on-device KV growth), so it consumes a token
-  stream instead of stepping per token. Contract for the S=1 bundle: set
-  `COREAI_CHUNK_THRESHOLD=1` before engine creation (prefill = pipelined S=1 steps) and never
-  call `engine.warmup()` (it warms query length 256, which the static `[1,1]` graph rejects — a
-  1-token generate after load is the warmup).
+- CoreAIChat's **⚡ modes** are different: one spec-parameterized `PipelinedBackend` hands the
+  whole generation to Apple's `coreai-pipelined` engine (`EngineFactory` over the
+  `gpu-pipelined/` LanguageBundle — async non-blocking encode, on-GPU argmax, on-device KV
+  growth), so it consumes a token stream instead of stepping per token. Contract for the S=1
+  bundles: set `COREAI_CHUNK_THRESHOLD=1` before engine creation (prefill = pipelined S=1
+  steps) and never call `engine.warmup()` (it warms query length 256, which the static `[1,1]`
+  graph rejects — a 1-token generate after load is the warmup). The **Gemma ⚡** spec
+  additionally binds the two PLE table files (from the shared `gemma4_gather_raw/` download)
+  as owned `storageModeShared` MTLBuffers via `EngineOptions.staticInputBuffers` (the
+  static-inputs engine patch; owned beats mmap on iOS — buffer-backing economics in
+  [`../knowledge/pipelined-engine.md`](../knowledge/pipelined-engine.md)), and stops on
+  gemma's `<end_of_turn>` (106) on top of the tokenizer's eos.
 - Headless device-probe hooks ride env vars (`GEMMA_*` / `QWEN_*` — see `CoreAIChatApp.swift` and
   the engine sources); launching from the home screen uses the published release configuration.
 - Engine-first workflow: validate the graph on the Mac CLI first (`swift run coreai-run`, raw

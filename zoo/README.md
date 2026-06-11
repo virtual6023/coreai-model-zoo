@@ -9,8 +9,8 @@ throughput.
 |---|---|---|---|
 | [`qwen3.5.md`](qwen3.5.md) | Qwen3.5 (hybrid linear+full attn) | [🤗 qwen3.5-0.8B-CoreAI](https://huggingface.co/mlboydaisuke/qwen3.5-0.8B-CoreAI) | 0.8B + 2B, top-1 exact vs HF |
 | [`gemma4-e2b.md`](gemma4-e2b.md) | Gemma 4 (multimodal; text decoder) | [🤗 gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI) | 8/8 exact vs HF |
-| [`lfm2.5.md`](lfm2.5.md) | LFM2.5 (conv + full-attn hybrid, LiquidAI) | [🤗 LFM2.5-1.2B-CoreAI](https://huggingface.co/mlboydaisuke/LFM2.5-1.2B-CoreAI) | 1.2B, oracle gate 16/16, **253 tok/s M4 Max / 38–39.6 iPhone** (pipelined) |
-| [`granite-4.0-h.md`](granite-4.0-h.md) | Granite 4.0-H (Mamba2 + attn hybrid, IBM) | [🤗 granite-4.0-h-CoreAI](https://huggingface.co/mlboydaisuke/granite-4.0-h-CoreAI) | 1b + 350m, oracle gate 16/16, **136.5 tok/s M4 Max / ~31 iPhone 17 Pro** (pipelined, first SSM-scan rider) |
+| [`lfm2.5.md`](lfm2.5.md) | LFM2.5 (conv + full-attn hybrid, LiquidAI) | [🤗 LFM2.5-1.2B-CoreAI](https://huggingface.co/mlboydaisuke/LFM2.5-1.2B-CoreAI) | 1.2B, oracle gate 16/16, **276.5 tok/s M4 Max / 44.1–46.6 iPhone (int8 + absmax int8 head)** (pipelined) |
+| [`granite-4.0-h.md`](granite-4.0-h.md) | Granite 4.0-H (Mamba2 + attn hybrid, IBM) | [🤗 granite-4.0-h-CoreAI](https://huggingface.co/mlboydaisuke/granite-4.0-h-CoreAI) | 1b + 350m, oracle gate 16/16, **136.5 tok/s M4 Max / 35.4–37.1 iPhone 17 Pro (int8 head)** (pipelined, first SSM-scan rider) |
 
 ## The matrix (every meaningful platform × compute-unit cell, greedy, top-1 vs HF)
 

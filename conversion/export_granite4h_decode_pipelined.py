@@ -23,14 +23,19 @@ Requires the granite4h model overlay on `coreai-models` (see
 conversion/README.md) plus the pipelined-engine extra-states patch on the
 Swift side to RUN the bundle.
 
-Run:  python export_granite4h_decode_pipelined.py [fp16|int8lin] \
+Run:  python export_granite4h_decode_pipelined.py [fp16|int8lin|int8hu] \
           [--hf-id ibm-granite/granite-4.0-h-1b] [--out-dir exports]
 
 Modes: fp16 - baseline; int8lin - per-block-32 linear int8 (the qwen3.5 ship
-recipe: scale-multiply dequant, no LUT). Embedding/conv1d/norms/lm_head stay
-fp16. Ship guidance: 1b -> int8lin (gate 16/16, ~32% faster); 350m -> fp16
-(int8 is numerically marginal there AND no faster — the model is
-overhead-bound, not bandwidth-bound, at that size).
+recipe: scale-multiply dequant, no LUT); int8hu - int8lin + untied int8
+lm_head (clones the tied embed table first — the eager quantizer silently
+skips shared parameters; use `--head-quant block32 --head-sym` = the qwen3.5
+ship shape, absmax per-block-32: big-vocab heads are fat-tailed and the default
+clipping qscheme crushes outlier rows). Embedding/conv1d/norms stay fp16;
+lm_head stays fp16 except in int8hu. Ship guidance: 1b -> int8lin
+(gate 16/16, ~32% faster); 350m -> fp16 (int8 is numerically marginal there
+AND no faster — the model is overhead-bound, not bandwidth-bound, at that
+size).
 """
 from __future__ import annotations
 
@@ -83,6 +88,31 @@ def linear_quant_config(dtype: str = "int8") -> dict:
     }
 
 
+def head_quant_spec(gran: str, sym: bool) -> dict:
+    """int8hu: the explicit lm_head spec (qwen3.5 lesson). Big-vocab heads are
+    fat-tailed — `symmetric_with_clipping` crushes outlier rows (the qwen-2B
+    6/16 oracle-flip signature); plain `symmetric` (absmax) gates 16/16.
+    SHIP SHAPE: per-block-32 + --head-sym. WARNING: per_channel axis-0 int8
+    dequant is BROKEN on the macOS-27-beta GPU delegate (garbage logits,
+    minimal head-only repro 2026-06-11) — "perchan" kept for re-testing on
+    future OS builds only."""
+    if gran == "perchan":
+        g: dict = {"type": "per_channel", "axis": 0}
+    else:
+        g = {"type": "per_block", "block_size": int(gran[len("block"):]), "axis": 1}
+    return {
+        "op_state_spec": {
+            "weight": {
+                "dtype": "int8",
+                "qscheme": "symmetric" if sym else "symmetric_with_clipping",
+                "granularity": g,
+            }
+        },
+        "op_input_spec": None,
+        "op_output_spec": None,
+    }
+
+
 def write_bundle_metadata(out_dir: Path, name: str, hf_id: str, cfg, max_ctx: int) -> None:
     meta = {
         "metadata_version": "0.2",
@@ -105,14 +135,22 @@ def write_bundle_metadata(out_dir: Path, name: str, hf_id: str, cfg, max_ctx: in
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("mode", nargs="?", default="int8lin", choices=["fp16", "int8lin"])
+    ap.add_argument("mode", nargs="?", default="int8lin",
+                    choices=["fp16", "int8lin", "int8hu"])
     ap.add_argument("--hf-id", default="ibm-granite/granite-4.0-h-1b")
     ap.add_argument("--out-dir", default="exports")
     ap.add_argument("--max-ctx", type=int, default=4096)
+    ap.add_argument("--head-quant", default="block32",
+                    choices=["block32", "block16", "block8", "perchan"],
+                    help="int8hu only: lm_head weight granularity (ship=block32; perchan is BROKEN on the beta GPU delegate)")
+    ap.add_argument("--head-sym", action="store_true",
+                    help="int8hu only: plain symmetric (absmax, no clipping) for the head")
     args = ap.parse_args()
 
     short = args.hf_id.rsplit("/", 1)[-1].lower().replace(".", "_").replace("-", "_")
     name = f"{short}_decode_{args.mode}"
+    if args.mode == "int8hu" and (args.head_quant != "block32" or args.head_sym):
+        name += f"_{args.head_quant}" + ("_sym" if args.head_sym else "")
 
     print(f"loading {args.hf_id} fp16 ...")
     model = Granite4HForCausalLMStateful.from_hf(args.hf_id, target_dtype=DTYPE)
@@ -148,13 +186,21 @@ def main() -> None:
         "rec_state": None,
     }
 
-    if args.mode == "int8lin":
+    if args.mode in ("int8lin", "int8hu"):
         from coreai_models.export.compression import quantize_pytorch_model
 
-        print("quantizing (linear int8 per-block-32) ...")
+        cfg_q = linear_quant_config()
+        if args.mode == "int8hu":
+            # Untie the head (the eager quantizer skips shared params) and
+            # quantize ONLY it on top of int8lin — the rest of the exclusion
+            # list stays untouched.
+            cfg_q["module_name_configs"][r".*lm_head$"] = head_quant_spec(
+                args.head_quant, args.head_sym)
+            model.lm_head.weight = torch.nn.Parameter(
+                model.lm_head.weight.detach().clone())
+        print(f"quantizing (linear int8 per-block-32, mode={args.mode}) ...")
         model = quantize_pytorch_model(
-            model, tuple(reference_inputs.values()), dynamic_shapes,
-            linear_quant_config())
+            model, tuple(reference_inputs.values()), dynamic_shapes, cfg_q)
 
     # No GatedDeltaUpdate modules in Granite 4.0-H — drop its externalize spec
     # (the exporter would otherwise look for uncalled submodules).

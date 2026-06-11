@@ -18,6 +18,10 @@ Every compressor output is itself a PyTorch model (validate/finetune/export it).
 - **dtypes**: INT2/4/8 (signed+unsigned), FP4_E2M1, FP8_E4M3FN/E5M2 (limited Core AI support).
 - **granularity**: per-tensor / per-channel (axis 0 for Linear/Conv/Embedding) / **per-block** (`block_size`,
   e.g. 32 along the in-features axis). Finer = better quality, more scale overhead.
+  ⚠️ per-channel (axis-0) int8 Linear weights are **broken on the macOS-27-beta MPSGraph GPU
+  delegate** — torch-level numerics are clean but the lowered matmul returns garbage (minimal
+  head-only repro 2026-06-11, multiple shapes, sym and clipping alike); use per-block-32 there
+  (see [pipelined-engine.md](pipelined-engine.md)).
 - **scheme**: symmetric vs asymmetric. At int8 the gap is small (~1.5 dB); at int4 asymmetric gains +3–5 dB,
   and `symmetric_with_clipping` can add +7 dB.
 - **workflows**: data-free weight-only PTQ (seconds; good ≥8-bit, sometimes 4–6) → calibration (≈128 samples,

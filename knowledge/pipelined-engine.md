@@ -4,7 +4,7 @@
 > M4 Max + iPhone 17 Pro): the same `.aimodel` weights decode **3.5× faster** when Apple's
 > `coreai-pipelined` engine drives them instead of a hand-rolled per-token `fn.run()` loop —
 > Qwen3.5-0.8B int8: **210 tok/s vs 58.5 on M4 Max, 69.7–74.0 vs 42.5–45.4 (fused-kernel
-> monolith) on iPhone 17 Pro** (ship config incl. the per-channel absmax int8 head; fp16-head
+> monolith) on iPhone 17 Pro** (ship config incl. the per-block-32 absmax int8 head; fp16-head
 > figures were 204 / 50.3–51.5). This page is how to put a model on that engine, every trap we
 > hit, and what doesn't fit. Working artifacts: the qwen3.5 fast path in
 > [`../conversion/export_qwen3_5_decode_pipelined.py`](../conversion/export_qwen3_5_decode_pipelined.py)
@@ -135,6 +135,18 @@ possible:
   20.9 s where every prior attempt ENOENT'd; every model pays one cold re-spec). Last resort:
   uninstall the app (clears the container incl. all sideloads), reinstall, retry with ≥~4 GB
   free. Diagnose by logging `attributesOfFileSystem` free space from the app.
+- **Adding a GB-class AOT bundle to a container can break OTHER models' cached
+  specializations.** First engine create for the gemma4 `--tbl` `.aimodelc` loaded from
+  Documents ingests its ~2 GB executable into the content-keyed coreai-cache (engine load
+  ~11 s including the copy, ~6 s warm; one first-ever attempt instead sat silent for
+  ~10 min after the table-mapping log and died without a console line — unreproduced, and
+  the completed ingest survived: if you see that, relaunch). Right after that ingest, the
+  gemma4 ANE chunk set in the SAME container started dying at load with the MPSGraph
+  assertion `Unable to use cached specializations and original module not available`
+  (signal 6; the first failing attempt exited 1 after chunk load). Recovery = the in-app
+  cache wipe (`GEMMA_CLEAR_SPEC_CACHE=1`); every model pays one cold re-spec (ANE chunks
+  53.8 s) and the tbl ingest re-runs cleanly. Rule of thumb: after adding a multi-GB
+  bundle next to other specialized models, expect one wipe + re-spec cycle.
 
 ## State & precision traps on the GPU delegate (found by the LFM2.5 port)
 
@@ -212,14 +224,37 @@ NOT mean "no win on the phone" — re-test head quant on every BW-bound surface.
 (RESOLVED 2026-06-11): with the default clipping qscheme the 2B head flips 6/16 oracle
 top-1s with a tell-tale signature — one sweep position craters to cos 0.62 while neighbors
 sit at 0.999x = outlier head rows clipped, not uniform noise. Plain `symmetric` gates 16/16
-at identical speed at BOTH granularities tried (per-channel axis-0 AND per-block-32) — the
-killer was the clipping, not the bits or the block shape. Ship shape: per-channel axis-0
-(one scale per vocab row, 0.5 MB vs 30 MB of block scales). Measured
-(`int8hu --head-quant perchan --head-sym`): 2B **161 tok/s M4 Max, 28–30 tok/s iPhone 17
-Pro (≥ the CoreML-2B port's ~27)**; 0.8B **210 / 69.7–74.0** — greedy rollouts
+at identical speed. **Ship shape = per-block-32 + symmetric** (`int8hu --head-sym`; block32
+is the script default). Measured: qwen-2B **161 tok/s M4 Max, 28–30 tok/s iPhone 17
+Pro (≥ the CoreML-2B port's ~27)**; qwen-0.8B **210 / 69.7–74.0** — greedy rollouts
 token-identical to the fp16-head bundles in both cases.
 The transformer body is fine WITH clipping (int8lin gates 16/16 everywhere) — this rule is
 specifically about fat-tailed embedding/head tables.
+**Per-channel (axis-0) int8 weights are BROKEN on this GPU delegate** (found 2026-06-11
+replicating the head lever on LFM2.5): the bundle loads and runs but the quantized matmul
+returns garbage (full-model gate 0/16 with cos=nan; minimal head-only graph reproduces it
+at multiple vocab shapes, `symmetric` and clipping alike, while the SAME minigraph with
+per-block-32 is cos 0.9999x vs torch — torch-level numerics gate 16/16, so it is a
+delegate lowering bug, not quantization damage). Historical footnote: the qwen A/B
+granularity bisect never actually exercised per-channel — the export script parsed
+`--head-quant` without applying it, so both probes were per-block-32 (byte-identical
+bundle sizes confirm it); the HF bundles named `*_perchan_sym` contain per-block-32
+heads, and every published number stands. The lesson stacks with the int8-km-LUT one:
+on this delegate, prefer plain per-block-32 linear for everything until a probe proves
+otherwise.
+**The head lever replicates across models** (2026-06-11, `int8hu --head-sym` ported to
+both export scripts, Mac AND iPhone measured): LFM2.5-1.2B **276.5 tok/s decode on M4 Max
+(+9% over int8lin's 253.3) and 44.1–46.6 on iPhone 17 Pro (+15–20% over 38.0–39.6,
+~94–98% of the ~47 naive ceiling)**, oracle gate 16/16 + decode PASS, greedy rollouts
+token-identical to int8lin on both fixed prompts (python runtime and release
+`llm-runner`), device numerics 24/24 ≡ Mac-GPU on all 3 runs; bundle 1.62 GB (+0.13 GB
+for the untied int8 head). Granite-4.0-h-1b: gate 16/16 + decode PASS, **Mac-flat
+(134.2 vs int8lin's 136.5) but +17–21% on iPhone (30.2–31.3 → 35.4–37.1 typical
+settled, 24/24 ≡ Mac ×3 runs)** — the THIRD "Mac no-win ≠ device no-win" confirmation
+(after qwen-0.8B and qwen-2B; head ≈ 10% of the per-token read on the BW-saturated
+surface). Its natural-prompt greedy forks from int8lin at +7 tokens, inside the
+post-<|end_of_text|> filler — the oracle rollout is token-identical; judge by the gate,
+not rollout identity.
 
 ## Numerics gating (how to judge a quantized bundle)
 
@@ -246,7 +281,7 @@ specifically about fat-tailed embedding/head tables.
 
 | surface | prefill | decode |
 |---|---:|---:|
-| M4 Max, ship (int8 + perchan absmax int8 head) | 211.6 | **210.0** |
+| M4 Max, ship (int8 + per-block-32 absmax int8 head) | 211.6 | **210.0** |
 | iPhone 17 Pro, ship, one-shot runner | 72.0–73.9 | **69.7–74.0** |
 | M4 Max, fp16-head `int8lin` | 198.8 | 204.1 |
 | iPhone 17 Pro, fp16-head `int8lin` | 51.2 | 50.3–51.5 |
@@ -284,7 +319,7 @@ app-wiring change, tracked separately.)
   attention shows no fp16 amplification, see
   [`../zoo/granite-4.0-h.md`](../zoo/granite-4.0-h.md)), GDN hybrids (qwen3.5 family incl. 2B —
   **verified 2026-06-11, Mac AND iPhone**: same script via `--hf-id Qwen/Qwen3.5-2B`, zero new
-  work; ship config adds the per-channel absmax int8 head → **161 tok/s M4 Max,
+  work; ship config adds the per-block-32 absmax int8 head → **161 tok/s M4 Max,
   28–30 tok/s iPhone** (≥ the CoreML-2B port's ~27), oracle gate 16/16, 24/24 ≡ Mac-GPU
   on device; fp16-head int8lin = 127/19–21; needs the increased-memory entitlement on
   phone).

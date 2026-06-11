@@ -20,8 +20,8 @@ on-device, with the conversion code and a knowledge base. Successor to
 |---|---|---|---|
 | **Qwen3.5-0.8B** | **69.7–74.0** | 14.7 | **210** |
 | **Qwen3.5-2B** | **28–30** | — | **161** |
-| **LFM2.5-1.2B** | **38.0–39.6** | — | **253** |
-| **Granite 4.0-H 1B** | **30.2–31.3** | — | **136.5** |
+| **LFM2.5-1.2B** | **44.1–46.6** | — | **276.5** |
+| **Granite 4.0-H 1B** | **35.4–37.1** | — | **136.5** |
 | **Gemma 4 E2B** | **30.3** | 6 | **77.0** |
 
 Measured on the iOS 27 / macOS 27 beta, all on Apple's `coreai-pipelined` GPU engine (zero
@@ -38,7 +38,7 @@ Next up: Gemma 4 E4B · Qwen3-VL.
 | [`knowledge/`](knowledge/) | Verified notes on the framework: conversion, compression, stateful KV, custom Metal kernels, AOT, compute-unit rules, the Swift runtime. |
 | [`conversion/`](conversion/) | Re-authored models + convert / verify / compress scripts (PyTorch → `.aimodel`). |
 | [`swift/`](swift/) | `CoreAIRunner` — a Swift package that drives `.aimodel` LLM bundles, including architectures beyond the standard runtime. |
-| [`apps/`](apps/) | SwiftUI on-device chat apps (iOS 27): CoreAIChat (Gemma 4 E2B GPU/ANE + Qwen3.5 ⚡pipelined, one picker) + QwenChatFast (Qwen3.5 static kernels) with in-app model download. |
+| [`apps/`](apps/) | SwiftUI on-device chat apps (iOS 27): CoreAIChat (Gemma 4 E2B GPU/ANE/⚡ + Qwen3.5 / Qwen3.5-2B / LFM2.5 / Granite ⚡pipelined, one picker) + QwenChatFast (Qwen3.5 static kernels) with in-app model download. |
 
 ## Start here
 

@@ -91,7 +91,7 @@ Quantization sweep (M4 Max, p=128 g=256, release `llm-benchmark`):
 | int8 k-means g32 | 1.0 GB | 113.2 | EXACT — but the 256-entry LUT gather is slow on the GPU delegate |
 | int8 linear per-block-32 (`int8lin`) | 1.0 GB | 204.1 | token-for-token == fp16-GPU; 16/16 single-step top-1 vs the fp32 HF oracle + HF-cache-seeded decode step |
 | + untied int8 lm_head, block-32 with clipping (`int8hu`) | 1.3 GB | 201.4 | 16/16 PASS but no Mac win — shelved at first; the 2B later showed "no Mac win" ≠ "no device win" |
-| **+ untied per-channel absmax int8 head (ship)** — `int8hu --head-quant perchan --head-sym` | 1.3 GB | **210.0** | 16/16 + decode step; greedy rollouts token-identical to int8lin on both fixed prompts |
+| **+ untied per-block-32 absmax int8 head (ship)** — `int8hu --head-sym` | 1.3 GB | **210.0** | 16/16 + decode step; greedy rollouts token-identical to int8lin on both fixed prompts |
 
 **The head config is the iPhone lever**: on the Mac the head matvec is largely
 hidden (+3%), but on the bandwidth-bound phone the fp16 head was **54% of the
@@ -120,7 +120,7 @@ the engine default warms shape 256 — `llm-runner` needs
 real trial).
 
 **iPhone 17 Pro (measured 2026-06-11, Release build, one-shot benchmark app on
-the patched engine): the ship config (int8 + per-channel absmax int8 head)
+the patched engine): the ship config (int8 + per-block-32 absmax int8 head)
 decodes 69.7–74.0 tok/s, 24/24 token-identical to the Mac-GPU sequences on
 both fixed prompts — +40% over the fp16-head int8lin (50.3–51.5) and ~1.6×
 the shipped int8v3 fused-kernel monolith (42.5–45.4)** with zero custom
@@ -132,7 +132,7 @@ chunkwise-parallel GDN prefill is the open fix. fp16×pipelined was correctly
 predicted to lose (~44 ceiling) and was not run.
 
 Export: [`../conversion/export_qwen3_5_decode_pipelined.py`](../conversion/export_qwen3_5_decode_pipelined.py)
-(ship: `int8hu --head-quant perchan --head-sym`; `int8lin` fp16-head default;
+(ship: `int8hu --head-sym`; `int8lin` fp16-head default;
 `fp16` / `int8` k-means for comparison).
 
 ### Qwen3.5-2B on the same fast path: 161 tok/s on M4 Max, 28–30 on iPhone
@@ -144,7 +144,7 @@ release `llm-benchmark`, `COREAI_CHUNK_THRESHOLD=1`):
 
 | config | bundle | prefill tok/s | decode tok/s | numerics |
 |---|---:|---:|---:|---|
-| **int8lin + per-channel absmax int8 head (ship)** — `int8hu --head-quant perchan --head-sym` | 2.9 GB | 161.2 | **160.8** | 16/16 single-step top-1 vs the fp32 HF oracle + HF-cache-seeded decode step; greedy rollouts token-identical to int8lin |
+| **int8lin + per-block-32 absmax int8 head (ship)** — `int8hu --head-sym` | 2.9 GB | 161.2 | **160.8** | 16/16 single-step top-1 vs the fp32 HF oracle + HF-cache-seeded decode step; greedy rollouts token-identical to int8lin |
 | int8 linear per-block-32, fp16 head (`int8lin`) | 2.3 GB | 127.0 | 127.2 | 16/16 + decode step (cos 0.99999) |
 | fp16 | 3.5 GB | 91.2 | 90.9 | 16/16 + decode step (cos 0.999999) |
 | + int8 head, block-32 **with clipping** (`int8hu`) | 2.8 GB | 151.1 | 159.1 | **FAILS the gate (10/16)** — see below |
@@ -156,10 +156,23 @@ is worth +26% — but with the default `symmetric_with_clipping` qscheme the
 248 K-vocab head flips 6/16 oracle top-1s, with a tell-tale signature (one
 position craters to cos 0.62 while its neighbors sit at 0.999x — outlier head
 rows getting clipped, not uniform noise; the 0.8B's smaller head tolerated the
-same recipe). Switching the head to plain **absmax `symmetric`** fixes it at
-ANY granularity tried — per-channel (axis 0) and per-block-32 both gate 16/16
-at the same ~161 tok/s. Per-channel is the ship pick (0.5 MB of scales vs
-30 MB, conceptually the right shape for a matvec head).
+same recipe). Switching the head to plain **absmax `symmetric`** fixes it: per-block-32 +
+symmetric gates 16/16 at the same ~161 tok/s.
+
+**Granularity correction (2026-06-11)**: the original A/B bisect believed it
+compared per-channel (axis 0) against per-block-32 — but the export script
+parsed the granularity flag without applying it, so BOTH probes were
+per-block-32 (byte-identical bundle sizes confirmed it; per-channel scales
+would be 0.5 MB vs ~30 MB). What the bisect actually proved is that the
+clipping was the killer. REAL per-channel axis-0 int8 was tested later the
+same day and is **broken on the macOS-27-beta GPU delegate** (garbage logits,
+cos ~0 vs torch, reproduced in a minimal head-only graph at multiple vocab
+shapes, sym and clipping alike — torch-level numerics are 16/16, so it is a
+delegate lowering bug, not a quantization problem). **Ship shape = per-block-32
++ absmax symmetric** (`int8hu --head-sym`; block32 is the default granularity).
+The HF bundles published under the historical `*_perchan_sym` name contain
+per-block-32 heads and are kept under that name — every published number was
+measured on per-block-32 + symmetric and stands.
 
 The `int4lin` row closes the int4 question **for both quantizer families**: the
 0.8B failed int4 as k-means (g32, and g8 + int8 rescue variants); the 2B now

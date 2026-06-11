@@ -23,10 +23,20 @@ extra-states patch budget (≤2). No engine changes needed beyond the existing p
 |---|---:|---:|---:|---|
 | fp16 (+fp32 attn proj), M4 Max | 2.2 GB | 162.8 | **162.1** | 16/16 oracle gate, cos ≥ 0.999998 |
 | **int8 linear per-block-32 (ship), M4 Max** | **1.5 GB** | **253.3** | **253.3** | **16/16 oracle gate + HF-seeded decode step (cos ≥ 0.99992); engine path ≡ python-GPU 24/24 greedy** |
+| **+ untied per-block-32 absmax int8 head (`int8hu --head-sym`) = SHIP, M4 Max** | 1.6 GB | 277.8 | **276.5** | **16/16 oracle gate + decode step; greedy token-identical to int8lin on both fixed prompts (python runtime AND release `llm-runner`)** |
+| **int8hu --head-sym, iPhone 17 Pro** (PipelinedBench, n=3×2, settled) | 1.6 GB | 44.2–46.6 | **44.1–46.6** | **nat 24/24 + oracle 24/24 on ALL 3 runs — token-identical to the M4 Max GPU sequences** |
 | **int8lin, iPhone 17 Pro** (PipelinedBench, n=2×2) | 1.5 GB | 39.2–39.4 | **38.0–39.6** | **nat 24/24 + oracle 24/24 on BOTH runs — token-identical to the M4 Max GPU sequences** |
 | int8lin, iPhone 17 Pro, chat app (CoreAIChat LFM mode, 200-tok story) | 1.5 GB | 30.7 | **35.8** | coherent instruct output via the bundle chat template |
 
 - **253 tok/s on a 1.2B** beats our qwen3.5-0.8B pipelined result (204) on a model 1.5× larger.
+- **The qwen head lever replicates here**: untie the tied lm_head and quantize it absmax
+  per-block-32 `symmetric` (clipping corrupts big-vocab heads; REAL per-channel axis-0 is
+  broken on this beta GPU delegate — see the qwen3.5 card). The fp16 head was ~19% of the
+  per-token read: **+9% on the Mac (253→276.5), +15–20% on iPhone (38.0–39.6 →
+  44.1–46.6, typical settled 44.4–46.4)** — the predicted 43–46 window, ~94–98% of the
+  naive BW ceiling (~60 GB/s ÷ ~1.27 GB/token ≈ 47); warm engine load 0.3 s, cold
+  specialization 4.5 s. The Mac-visible win (qwen-0.8B's was Mac-flat) comes from the
+  bigger head share at hidden 2048/vocab 65536.
 - Prefill ≈ decode because prefill runs as pipelined S=1 steps (`COREAI_CHUNK_THRESHOLD=1`).
 - `llm-runner` (the real engine surface, on-GPU argmax sampling): 262 tok/s in a short run,
   warm load 2.7 s, output token-for-token identical to the python-runtime rollout (24/24).
@@ -108,6 +118,8 @@ gemma4 passes, qwen3.5 and LFM2.5 don't.** int8lin stays the ship config.
 ```bash
 cd coreai-models   # with the lfm2 model overlay (models/macos/lfm2.py) in place
 .venv/bin/python ../coreai-models-community/conversion/export_lfm2_decode_pipelined.py int8lin
+# fastest decode (+9% Mac): int8lin + untied absmax per-block-32 int8 head
+.venv/bin/python ../coreai-models-community/conversion/export_lfm2_decode_pipelined.py int8hu --head-sym
 COREAI_CHUNK_THRESHOLD=1 ./.build/release/llm-benchmark \
     --model exports/lfm2_5_1_2b_instruct_decode_int8lin -p 128 -g 256 -n 3
 ```

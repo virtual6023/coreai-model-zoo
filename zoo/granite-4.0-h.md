@@ -32,6 +32,8 @@ shows no fp16-matmul amplification; the SSM step itself computes in fp32 in-grap
 |---|---:|---:|---:|---|
 | **1b int8 linear per-block-32 (ship)** | **1.6 GB** | **136.7** | **136.5** | **16/16 oracle gate + HF-seeded decode step — on a margin-clean oracle (min top-2 margin 0.137, decode 2.53)** |
 | **1b int8lin, iPhone 17 Pro** (PipelinedBench, n=2×2) | 1.6 GB | 30.1–32.2 | **30.8 avg r1 (26.4–31.3)** | **nat 24/24 + oracle 24/24 on BOTH runs — token-identical to the M4 Max GPU sequences** |
+| **1b + untied per-block-32 absmax int8 head (`int8hu --head-sym`) = device SHIP** | 1.8 GB | 134.9 | 134.2 | 16/16 oracle gate + decode step; oracle greedy ≡ int8lin, natural forks at +7 (post-`<\|end_of_text\|>` filler — fp16-noise class). **Mac-flat (−1.7%)** — but see the iPhone row |
+| **1b int8hu --head-sym, iPhone 17 Pro** (PipelinedBench, n=3×2, settled) | 1.8 GB | 35.1–37.0 | **35.4–37.1 typical (one thermal-dip trial 31.7)** | **nat 24/24 + oracle 24/24 on ALL 3 runs — token-identical to the M4 Max GPU sequences. +17–21% over int8lin's 30.2–31.3: the third "Mac no-win ≠ device no-win" confirmation (head ≈ 10% of per-token read on the BW-saturated surface; ~88% of the ~41 naive ceiling)** |
 | 1b fp16 (control) | 2.8 GB | 103.7 | 103.6 | 16/16 oracle gate + decode step |
 | 350m fp16 (ship at this size) | 0.66 GB | 193.2 | 191.1 | 16/16 oracle gate + decode step; engine path ≡ torch 24/24 greedy ×2 prompts; `llm-runner` 217.9 tok/s short-run |
 | 350m int8 (lin/b8/sel/mix) | — | — | 185.8–186.6 | **not shipped**: gate FAILs *and* no speed win (see below) |
@@ -91,6 +93,8 @@ fp16), depthwise conv1d, all norms (incl. the gated Mamba output norm), lm_head.
 ```bash
 cd coreai-models   # with the granite4h model overlay (models/macos/granite4h.py) in place
 .venv/bin/python ../coreai-models-community/conversion/export_granite4h_decode_pipelined.py int8lin
+# fastest device decode (+17-21% iPhone): int8lin + untied absmax per-block-32 int8 head
+.venv/bin/python ../coreai-models-community/conversion/export_granite4h_decode_pipelined.py int8hu --head-sym
 COREAI_CHUNK_THRESHOLD=1 ./.build/release/llm-benchmark \
     --model exports/granite_4_0_h_1b_decode_int8lin -p 128 -g 256 -n 3
 ```

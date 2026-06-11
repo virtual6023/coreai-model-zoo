@@ -20,16 +20,20 @@ Requires the lfm2 model overlay on `coreai-models` (see conversion/README.md)
 plus the pipelined-engine extra-states patch on the Swift side to RUN the
 bundle (the engine carries the conv state as a fixed-shape extra state).
 
-Run:  python export_lfm2_decode_pipelined.py [fp16|int8lin|int4lin] \
+Run:  python export_lfm2_decode_pipelined.py [fp16|int8lin|int8hu|int4lin] \
           [--hf-id LiquidAI/LFM2.5-1.2B-Instruct] [--out-dir exports]
 
 Modes: fp16 - baseline; int8lin - per-block-32 linear int8 (the qwen3.5 ship
 recipe: scale-multiply dequant, no LUT — 256-entry LUT gathers are slow on the
-GPU delegate); int4lin - per-block-32 linear int4 (the gemma4-verified
+GPU delegate); int8hu - int8lin + untied int8 lm_head (clones the tied embed
+table first — the eager quantizer silently skips shared parameters; use
+`--head-quant block32 --head-sym` = the qwen3.5 ship shape, absmax per-block-32:
+big-vocab heads are fat-tailed and the default clipping qscheme crushes
+outlier rows); int4lin - per-block-32 linear int4 (the gemma4-verified
 bytes-without-LUT recipe — decode is BW-bound on device, so halving the
 quantized bytes is the remaining decode lever; gate 16/16 before believing
-it). Embedding/conv1d/norms/lm_head/attention projections stay high precision
-in all quantized modes.
+it). Embedding/conv1d/norms/attention projections stay high precision in all
+quantized modes; lm_head stays fp16 except in int8hu.
 """
 from __future__ import annotations
 
@@ -97,6 +101,31 @@ def linear_quant_config(dtype: str = "int8", rescue_int8_regex: str | None = Non
     }
 
 
+def head_quant_spec(gran: str, sym: bool) -> dict:
+    """int8hu: the explicit lm_head spec (qwen3.5 lesson). Big-vocab heads are
+    fat-tailed — `symmetric_with_clipping` crushes outlier rows (the qwen-2B
+    6/16 oracle-flip signature); plain `symmetric` (absmax) gates 16/16.
+    SHIP SHAPE: per-block-32 + --head-sym. WARNING: per_channel axis-0 int8
+    dequant is BROKEN on the macOS-27-beta GPU delegate (garbage logits,
+    minimal head-only repro 2026-06-11) — "perchan" kept for re-testing on
+    future OS builds only."""
+    if gran == "perchan":
+        g: dict = {"type": "per_channel", "axis": 0}
+    else:
+        g = {"type": "per_block", "block_size": int(gran[len("block"):]), "axis": 1}
+    return {
+        "op_state_spec": {
+            "weight": {
+                "dtype": "int8",
+                "qscheme": "symmetric" if sym else "symmetric_with_clipping",
+                "granularity": g,
+            }
+        },
+        "op_input_spec": None,
+        "op_output_spec": None,
+    }
+
+
 def write_bundle_metadata(out_dir: Path, name: str, hf_id: str, cfg, max_ctx: int) -> None:
     meta = {
         "metadata_version": "0.2",
@@ -120,10 +149,15 @@ def write_bundle_metadata(out_dir: Path, name: str, hf_id: str, cfg, max_ctx: in
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("mode", nargs="?", default="int8lin",
-                    choices=["fp16", "int8lin", "int4lin", "int4lin8"])
+                    choices=["fp16", "int8lin", "int8hu", "int4lin", "int4lin8"])
     ap.add_argument("--hf-id", default="LiquidAI/LFM2.5-1.2B-Instruct")
     ap.add_argument("--out-dir", default="exports")
     ap.add_argument("--max-ctx", type=int, default=4096)
+    ap.add_argument("--head-quant", default="block32",
+                    choices=["block32", "block16", "block8", "perchan"],
+                    help="int8hu only: lm_head weight granularity (ship=block32; perchan is BROKEN on the beta GPU delegate)")
+    ap.add_argument("--head-sym", action="store_true",
+                    help="int8hu only: plain symmetric (absmax, no clipping) for the head")
     ap.add_argument("--rescue-regex", default=None,
                     help="int4lin8 only: override the int8-rescue module regex "
                          "(default = the conv-mixer projections)")
@@ -136,6 +170,8 @@ def main() -> None:
 
     short = args.hf_id.rsplit("/", 1)[-1].lower().replace(".", "_").replace("-", "_")
     name = f"{short}_decode_{args.mode}{args.tag}"
+    if args.mode == "int8hu" and (args.head_quant != "block32" or args.head_sym):
+        name += f"_{args.head_quant}" + ("_sym" if args.head_sym else "")
 
     print(f"loading {args.hf_id} fp16 ...")
     model = lfm2_from_hf(args.hf_id, target_dtype=DTYPE, stateful=True)
@@ -167,10 +203,10 @@ def main() -> None:
         "conv_state": None,  # fixed-shape extra state
     }
 
-    if args.mode in ("int8lin", "int4lin", "int4lin8"):
+    if args.mode in ("int8lin", "int8hu", "int4lin", "int4lin8"):
         from coreai_models.export.compression import quantize_pytorch_model
 
-        dtype = "int8" if args.mode == "int8lin" else "int4"
+        dtype = "int8" if args.mode in ("int8lin", "int8hu") else "int4"
         # int4lin8 = int4 everywhere quantized EXCEPT the rescue set, which
         # stays int8 (default: the conv-mixer projections — the
         # mixer-projection class is the int4-sensitive path, the qwen3.5
@@ -179,11 +215,19 @@ def main() -> None:
         if args.mode == "int4lin8":
             rescue = args.rescue_regex or r".*conv\.(in_proj|out_proj)$"
         block = args.int4_block if dtype == "int4" else 32
-        print(f"quantizing (linear {dtype} per-block-{block}"
+        cfg_q = linear_quant_config(dtype, rescue_int8_regex=rescue, block=block)
+        if args.mode == "int8hu":
+            # Untie the head (the eager quantizer skips shared params) and
+            # quantize ONLY it on top of int8lin — the fp32 attention
+            # projections + the rest of the exclusion list stay untouched.
+            cfg_q["module_name_configs"][r".*lm_head$"] = head_quant_spec(
+                args.head_quant, args.head_sym)
+            model.lm_head.weight = torch.nn.Parameter(
+                model.lm_head.weight.detach().clone())
+        print(f"quantizing (linear {dtype} per-block-{block}, mode={args.mode}"
               f"{', conv-mixer rescued to int8' if rescue else ''}) ...")
         model = quantize_pytorch_model(
-            model, tuple(reference_inputs.values()), dynamic_shapes,
-            linear_quant_config(dtype, rescue_int8_regex=rescue, block=block))
+            model, tuple(reference_inputs.values()), dynamic_shapes, cfg_q)
 
     # No GatedDeltaUpdate in LFM2 — drop its externalize spec (the exporter
     # would otherwise look for uncalled submodules). RMSNorm/SDPA stay fused

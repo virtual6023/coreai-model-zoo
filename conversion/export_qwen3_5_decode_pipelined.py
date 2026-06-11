@@ -99,6 +99,35 @@ def linear_quant_config(dtype: str = "int8") -> dict:
     }
 
 
+def head_quant_spec(gran: str, sym: bool) -> dict:
+    """int8hu: the explicit lm_head spec. Big-vocab heads are fat-tailed —
+    `symmetric_with_clipping` crushes outlier rows (the 2B 6/16 oracle-flip
+    signature: one position craters to cos 0.62 while neighbors sit at 0.999x);
+    plain `symmetric` (absmax) gates 16/16. SHIP SHAPE: per-block-32 +
+    --head-sym. WARNING: per_channel axis-0 int8 dequant is BROKEN on the
+    macOS-27-beta GPU delegate (garbage logits, cos ~0 vs torch, any vocab
+    shape, sym or clipping — minimal head-only repro 2026-06-11); the
+    "perchan" choice is kept for re-testing on future OS builds only. The
+    historically-named *_perchan_sym bundles were byte-identical to block32
+    (an earlier version of this script never applied the granularity flag) —
+    every shipped number was measured on per-block-32 + symmetric."""
+    if gran == "perchan":
+        g: dict = {"type": "per_channel", "axis": 0}
+    else:
+        g = {"type": "per_block", "block_size": int(gran[len("block"):]), "axis": 1}
+    return {
+        "op_state_spec": {
+            "weight": {
+                "dtype": "int8",
+                "qscheme": "symmetric" if sym else "symmetric_with_clipping",
+                "granularity": g,
+            }
+        },
+        "op_input_spec": None,
+        "op_output_spec": None,
+    }
+
+
 def write_bundle_metadata(out_dir: Path, name: str, hf_id: str, cfg, max_ctx: int) -> None:
     meta = {
         "metadata_version": "0.2",
@@ -128,7 +157,7 @@ def main() -> None:
     ap.add_argument("--max-ctx", type=int, default=4096)
     ap.add_argument("--head-quant", default="block32",
                     choices=["block32", "block16", "block8", "perchan"],
-                    help="int8hu only: lm_head weight granularity")
+                    help="int8hu only: lm_head weight granularity (ship=block32; perchan is BROKEN on the beta GPU delegate)")
     ap.add_argument("--head-sym", action="store_true",
                     help="int8hu only: plain symmetric (absmax, no clipping) for the head")
     args = ap.parse_args()
@@ -189,7 +218,8 @@ def main() -> None:
 
         cfg_q = linear_quant_config("int4" if args.mode == "int4lin" else "int8")
         if args.mode == "int8hu":
-            cfg_q["module_name_configs"] = {}
+            cfg_q["module_name_configs"] = {
+                r".*lm_head$": head_quant_spec(args.head_quant, args.head_sym)}
             model.lm_head.weight = torch.nn.Parameter(
                 model.lm_head.weight.detach().clone())
         print(f"quantizing (linear int8 per-block-32, mode={args.mode}) ...")

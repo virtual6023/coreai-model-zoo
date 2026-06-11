@@ -26,15 +26,17 @@ overlay** of that package. Concretely, the additions are:
 - On-device export (kept artifacts): `export_qwen3_5.py [0.8b|2b]`, `export_gemma4_frontend.py`.
 - **Qwen3.5 pipelined fast path (in this dir): `export_qwen3_5_decode_pipelined.py`** —
   decode-only loop-free bundles for Apple's `coreai-pipelined` GPU engine. Ship config for
-  BOTH sizes is `int8hu --head-quant perchan --head-sym` (per-channel **absmax** int8 head —
-  clipping corrupts big-vocab heads): 0.8B **210 tok/s M4 Max / 69.7–74.0 iPhone 17 Pro**
+  BOTH sizes is `int8hu --head-sym` (per-block-32 **absmax** int8 head — clipping corrupts
+  big-vocab heads; per-channel axis-0 is BROKEN on the beta GPU delegate, and the historical
+  `*_perchan_sym` bundle names actually contain per-block-32 heads — see the qwen3.5 card):
+  0.8B **210 tok/s M4 Max / 69.7–74.0 iPhone 17 Pro**
   (fp16-head int8lin: 204 / 50.3–51.5; custom-kernel CLI was 58.5); `--hf-id Qwen/Qwen3.5-2B`
   → 2B **161 / 28–30** (int8lin: 127 / 19–21). Needs the Swift engine patch
   `../apps/coreai-pipelined-extra-states.patch` and `COREAI_CHUNK_THRESHOLD=1` at run time.
-- **LFM2.5 pipelined (in this dir): `export_lfm2_decode_pipelined.py [fp16|int8lin]`** — the
-  first non-Qwen rider: LiquidAI's conv+attention hybrid, decode-only S=1 (loop-free by
-  construction — no scan anywhere), **253 tok/s int8lin / 162 fp16 on M4 Max**, oracle gate
-  16/16. Model overlay: `models/macos/lfm2.py` on the `coreai-models` checkout — it bakes in
+- **LFM2.5 pipelined (in this dir): `export_lfm2_decode_pipelined.py [fp16|int8lin|int8hu]`** —
+  the first non-Qwen rider: LiquidAI's conv+attention hybrid, decode-only S=1 (loop-free by
+  construction — no scan anywhere), **253 tok/s int8lin / 276.5 with the int8 head
+  (`int8hu --head-sym`) / 162 fp16 on M4 Max**, oracle gate 16/16 (all three). Model overlay: `models/macos/lfm2.py` on the `coreai-models` checkout — it bakes in
   two macOS-27-beta GPU-delegate workarounds (fused single conv-state write; fp32 attention
   projections). Same engine patch + `COREAI_CHUNK_THRESHOLD=1` run contract. See
   [`../zoo/lfm2.5.md`](../zoo/lfm2.5.md).
@@ -51,11 +53,12 @@ overlay** of that package. Concretely, the additions are:
   needs `../apps/coreai-pipelined-static-inputs.patch` + an app that binds the two dump files
   via `EngineOptions.staticInputBuffers` — buffer-mode traps in
   [`../knowledge/pipelined-engine.md`](../knowledge/pipelined-engine.md)).
-- **Granite 4.0-H pipelined (in this dir): `export_granite4h_decode_pipelined.py [fp16|int8lin]`** —
+- **Granite 4.0-H pipelined (in this dir): `export_granite4h_decode_pipelined.py [fp16|int8lin|int8hu]`** —
   the first Mamba2/SSM-scan rider: at S=1 the selective scan is a single recurrence step
   (loop-free, no while_loop), states = KV (4 attn layers) + conv/SSM stacks (= the ≤2
   extra-states budget). 1b int8lin **136.5 tok/s** / fp16 103.6 on M4 Max, oracle gate
-  16/16; `--hf-id ibm-granite/granite-4.0-h-350m` exports the 350m (ship fp16 there, 191
+  16/16 (`int8hu --head-sym` also gates 16/16 but is Mac-flat at 134.2 — device re-test
+  pending, the qwen "Mac no-win ≠ device no-win" pattern); `--hf-id ibm-granite/granite-4.0-h-350m` exports the 350m (ship fp16 there, 191
   tok/s — int8 fails the gate at that scale and is no faster). Model overlay:
   `models/macos/granite4h.py`. Same engine patch + `COREAI_CHUNK_THRESHOLD=1` run contract.
   See [`../zoo/granite-4.0-h.md`](../zoo/granite-4.0-h.md).

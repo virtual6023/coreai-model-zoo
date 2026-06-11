@@ -97,8 +97,9 @@ python knowledge/scripts/bench_cv_aimodel.py exports/<model>.aimodel gpu neural_
 ```
 
 Want to chat with these bundles instead of benching them? See
-[`apps/CoreAIChatMac`](../apps/CoreAIChatMac) — a minimal macOS chat app on the
-official runtime with live load/TTFT/tok-s stats (works with every LLM row above).
+[CoreAIChatMac](https://github.com/john-rocky/coreai-samples) — a minimal macOS chat
+app on the official runtime with live load/TTFT/tok-s stats (works with every LLM row
+above). Lives in the dedicated samples repo.
 
 ## Deep dive: gpt-oss-20b (the first big-MoE numbers on Core AI)
 
@@ -200,7 +201,7 @@ Suggested additions when integrating:
 
 1. Knowledge index: add `apple-models-bench.md — measured numbers for Apple's official
    recipes (M4 Max + iPhone 17 Pro), Core AI vs MLX, GPU vs ANE` to the knowledge list.
-2. Apps table: add `CoreAIChatMac — macOS chat app for any exported bundle, official
-   runtime, live tok/s stats (apps/CoreAIChatMac)`.
+2. Apps section: link the dedicated samples repo `github.com/john-rocky/coreai-samples`
+   (CoreAIChatMac moved there; zoo apps/ keeps the model-specific apps + engine patches).
 3. Headline numbers for the README top (if wanted): gpt-oss-20b 78 tok/s on M4 Max /
    qwen3-0.6b 484 tok/s / CLIP fp16 on ANE 3.7 ms.

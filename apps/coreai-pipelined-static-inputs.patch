@@ -1,0 +1,259 @@
+--- a/swift/Sources/CoreAILanguageModels/InferenceEngines/CoreAIPipelinedEngine.swift
++++ b/swift/Sources/CoreAILanguageModels/InferenceEngines/CoreAIPipelinedEngine.swift
+@@ -297,6 +297,22 @@
+     let shape: [Int]
+     let strides: [Int]
+     let stepByteCount: Int
++}
++
++// MARK: - Static Inputs
++
++/// A model input bound to the SAME host buffer on every encode — e.g. a giant quantized
++/// embedding table mmap'd from disk that the graph gathers from in-graph by token id
++/// (Gemma 4's per-layer-embedding table as `ple_table`/`ple_scale` inputs). The buffer is
++/// supplied by `EngineOptions.staticInputBuffers`, is never written, and imposes no per-step
++/// host work — unlike per-token inputs there is no S=1 constraint and no decode-loop wait on
++/// the sampled token, so the full pipeline depth survives.
++private struct PipelinedStaticInput {
++    let name: String
++    let buffer: MTLBuffer
++    let scalarType: NDArray.ScalarType
++    let shape: [Int]
++    let strides: [Int]
+ }
+ 
+ /// One-shot rendezvous between the sampler's GPU-completion callback (which learns the
+@@ -386,6 +402,10 @@
+     let perTokenInputProvider: PerTokenInputProvider?
+     let sampledTokenRendezvous = TokenRendezvous()
+ 
++    // Static inputs beyond input_ids/position_ids (same buffer every encode, e.g. mmap'd
++    // gather tables — see PipelinedStaticInput)
++    let staticInputs: [PipelinedStaticInput]
++
+     // Logits — reuses GrowingLogitsBuffer from TensorStorage+CoreAI.swift
+     var logits: GrowingLogitsBuffer
+ 
+@@ -430,11 +450,22 @@
+             throw InferenceRuntimeError.invalidInputType(
+                 "Expected at least 2 inputs, got \(descriptor.inputNames.count): \(descriptor.inputNames)")
+         }
+-        guard descriptor.inputNames.count - 2 <= Self.maxPerTokenInputs else {
++        // Inputs beyond the first two are static (a buffer was supplied for the name in
++        // EngineOptions.staticInputBuffers) or per-token (filled by the provider per step).
++        let extraInputNames = Array(descriptor.inputNames.dropFirst(2))
++        let staticInputNames = extraInputNames.filter { options.staticInputBuffers[$0] != nil }
++        let perTokenInputNames = extraInputNames.filter { options.staticInputBuffers[$0] == nil }
++        guard perTokenInputNames.count <= Self.maxPerTokenInputs else {
+             throw InferenceRuntimeError.invalidInputType(
+                 "At most \(Self.maxPerTokenInputs) per-token inputs beyond input_ids/position_ids "
+-                    + "are supported, got \(descriptor.inputNames.count - 2): \(descriptor.inputNames.dropFirst(2))")
++                    + "are supported, got \(perTokenInputNames.count): \(perTokenInputNames) "
++                    + "(constant inputs can ride EngineOptions.staticInputBuffers instead)")
+         }
++        guard staticInputNames.count <= Self.maxStaticInputs else {
++            throw InferenceRuntimeError.invalidInputType(
++                "At most \(Self.maxStaticInputs) static inputs are supported, "
++                    + "got \(staticInputNames.count): \(staticInputNames)")
++        }
+         guard descriptor.outputNames.count >= 1 else {
+             throw InferenceRuntimeError.invalidOutputType(
+                 "Expected at least 1 output, got \(descriptor.outputNames.count)")
+@@ -491,11 +522,49 @@
+                     + extraStatesLocal.map(\.name).joined(separator: ", "))
+         }
+ 
+-        // Inputs beyond input_ids/position_ids are per-token inputs: fixed-shape, filled by
+-        // the host provider once per step. One owned buffer holds maxContextLength slots
+-        // (slot = token position) so in-flight steps read disjoint regions.
++        // Static inputs: the caller-supplied buffer is bound unchanged on every encode.
++        var staticInputsLocal: [PipelinedStaticInput] = []
++        for name in staticInputNames {
++            guard case .ndArray(let desc) = descriptor.inputDescriptor(of: name) else {
++                throw InferenceRuntimeError.invalidInputType(
++                    "Cannot get descriptor for static input '\(name)'")
++            }
++            guard !desc.shape.contains(where: { $0 < 0 }) else {
++                throw InferenceRuntimeError.invalidInputType(
++                    "Static input '\(name)' has dynamic dims \(desc.shape) — static inputs "
++                        + "must be fixed-shape")
++            }
++            let resolved = desc.resolvingDynamicDimensions(desc.shape)
++            let buffer = options.staticInputBuffers[name]!.buffer
++            guard buffer.length >= resolved.minimumByteCount else {
++                throw InferenceRuntimeError.invalidInputType(
++                    "Static input '\(name)' needs \(resolved.minimumByteCount) bytes but the "
++                        + "supplied buffer holds \(buffer.length)")
++            }
++            staticInputsLocal.append(
++                PipelinedStaticInput(
++                    name: name,
++                    buffer: buffer,
++                    scalarType: desc.scalarType,
++                    shape: desc.shape,
++                    strides: resolved.preferredStrides
++                ))
++        }
++        if !staticInputsLocal.isEmpty {
++            let fmt = ByteCountFormatter()
++            fmt.countStyle = .memory
++            let total = staticInputsLocal.reduce(0) { $0 + $1.buffer.length }
++            CLILogger.log(
++                "Pipelined engine carrying \(staticInputsLocal.count) static input(s): "
++                    + staticInputsLocal.map(\.name).joined(separator: ", ")
++                    + " (\(fmt.string(fromByteCount: Int64(total))) bound per encode)")
++        }
++
++        // Per-token inputs: fixed-shape, filled by the host provider once per step.
++        // One owned buffer holds maxContextLength slots (slot = token position) so
++        // in-flight steps read disjoint regions.
+         var perTokenInputsLocal: [PipelinedPerTokenInput] = []
+-        for name in descriptor.inputNames.dropFirst(2) {
++        for name in perTokenInputNames {
+             guard case .ndArray(let desc) = descriptor.inputDescriptor(of: name) else {
+                 throw InferenceRuntimeError.invalidInputType(
+                     "Cannot get descriptor for per-token input '\(name)'")
+@@ -649,6 +718,7 @@
+         self.extraStates = extraStatesLocal
+         self.perTokenInputs = perTokenInputsLocal
+         self.perTokenInputProvider = options.perTokenInputProvider
++        self.staticInputs = staticInputsLocal
+         self.logits = logitsRef
+         self.cachedSampler = nil
+         self.cachedSamplerTemperature = nil
+@@ -680,6 +750,9 @@
+ 
+     /// Maximum number of per-token inputs beyond input_ids/position_ids.
+     static let maxPerTokenInputs = 2
++
++    /// Maximum number of static inputs (gather tables and the like).
++    static let maxStaticInputs = 4
+ 
+     /// Fill each per-token input's slot for `position` with rows for `token` (via the
+     /// provider) and merge the slot bindings into `inputs`. Slot = position keeps in-flight
+@@ -840,6 +913,16 @@
+         if let stepToken = perTokenStepToken {
+             try bindPerTokenInputs(token: stepToken, position: currentStep, into: &asyncInputs)
+         }
++        // Static inputs: same caller-owned buffer every step, nothing to fill.
++        for staticInput in staticInputs {
++            asyncInputs[staticInput.name] = unsafe InferenceFunction.AsyncValue(
++                unsafeBuffer: staticInput.buffer,
++                byteOffset: 0,
++                scalarType: staticInput.scalarType,
++                shape: staticInput.shape,
++                strides: staticInput.strides
++            )
++        }
+ 
+         // Build States as AsyncMutableValue (KV cache, in-place update)
+         let keyBuffer = kvCache.keyBinding.metalBuffer
+@@ -1198,6 +1281,16 @@
+         ]
+         if !perTokenInputs.isEmpty, let chunkToken = tokens.first {
+             try bindPerTokenInputs(token: chunkToken, position: currentStep, into: &asyncInputs)
++        }
++        // Static inputs: same caller-owned buffer every step, nothing to fill.
++        for staticInput in staticInputs {
++            asyncInputs[staticInput.name] = unsafe InferenceFunction.AsyncValue(
++                unsafeBuffer: staticInput.buffer,
++                byteOffset: 0,
++                scalarType: staticInput.scalarType,
++                shape: staticInput.shape,
++                strides: staticInput.strides
++            )
+         }
+ 
+         let keyBuffer = kvCache.keyBinding.metalBuffer
+@@ -1342,6 +1435,16 @@
+                 // Warm with the same dummy token the ids buffer holds, at position 0.
+                 try bindPerTokenInputs(token: 1, position: 0, into: &asyncInputs)
+             }
++            // Static inputs: same caller-owned buffer every step, nothing to fill.
++            for staticInput in staticInputs {
++                asyncInputs[staticInput.name] = unsafe InferenceFunction.AsyncValue(
++                    unsafeBuffer: staticInput.buffer,
++                    byteOffset: 0,
++                    scalarType: staticInput.scalarType,
++                    shape: staticInput.shape,
++                    strides: staticInput.strides
++                )
++            }
+ 
+             let keyBuffer = kvCache.keyBinding.metalBuffer
+             let kShape = kvCache.keyBinding.layout.shape
+--- a/swift/Sources/CoreAILanguageModels/InferenceEngines/EngineFactory.swift
++++ b/swift/Sources/CoreAILanguageModels/InferenceEngines/EngineFactory.swift
+@@ -6,6 +6,7 @@
+ import CoreAI
+ import CoreAIShared
+ import Foundation
++import Metal
+ 
+ /// A factory that creates inference engines from model configurations and assets.
+ ///
+@@ -235,6 +236,27 @@
+     _ name: String, _ token: Int32, _ position: Int,
+     _ destination: UnsafeMutableRawPointer, _ byteCount: Int
+ ) -> Void
++
++/// A model input bound to the SAME host buffer on every encode step.
++///
++/// For inputs whose value never changes across steps — e.g. a giant quantized
++/// embedding table the graph gathers from in-graph by token id, too large to live
++/// in the graph as a constant (Gemma 4's 2.3 GB per-layer-embedding table). The
++/// engine binds the buffer as-is on every encode: no per-step host work, no S=1
++/// constraint, and — unlike ``PerTokenInputProvider`` — no decode-loop wait on the
++/// sampled token, so the full GPU pipeline depth survives.
++///
++/// Create the buffer once (typically `MTLDevice.makeBuffer(bytesNoCopy:)` over a
++/// page-aligned read-only mmap of the table file) and keep it alive for the
++/// engine's lifetime. The buffer must be at least as long as the input's
++/// descriptor requires; contents are never written by the engine.
++public struct StaticInputBuffer: @unchecked Sendable {
++    public let buffer: any MTLBuffer
++
++    public init(_ buffer: any MTLBuffer) {
++        self.buffer = buffer
++    }
++}
+ 
+ /// Options that customize how the factory creates an inference engine and how
+ /// the engine manages its KV cache.
+@@ -271,6 +293,14 @@
+     /// pipelined engine supports per-token inputs. See ``PerTokenInputProvider``.
+     public let perTokenInputProvider: PerTokenInputProvider?
+ 
++    /// Constant host buffers for static model inputs, keyed by input name.
++    ///
++    /// An input beyond `input_ids`/`position_ids` whose name appears here is bound to
++    /// the given buffer unchanged on every encode (e.g. an mmap'd embedding table the
++    /// graph gathers from in-graph); any other extra input falls back to the per-token
++    /// path. Only the pipelined engine supports static inputs. See ``StaticInputBuffer``.
++    public let staticInputBuffers: [String: StaticInputBuffer]
++
+     /// Creates an options value with the variant and KV cache settings you specify.
+     ///
+     /// - Parameters:
+@@ -281,16 +311,20 @@
+     ///     Defaults to `nil`.
+     ///   - perTokenInputProvider: The filler for per-token model inputs, or `nil` for models
+     ///     without them. Defaults to `nil`.
++    ///   - staticInputBuffers: Constant buffers for static model inputs, keyed by input
++    ///     name. Defaults to empty.
+     public init(
+         variant: String? = nil,
+         kvCacheStrategy: KVCacheStrategy = .auto,
+         kvCacheSize: Int? = nil,
+-        perTokenInputProvider: PerTokenInputProvider? = nil
++        perTokenInputProvider: PerTokenInputProvider? = nil,
++        staticInputBuffers: [String: StaticInputBuffer] = [:]
+     ) {
+         self.variant = variant
+         self.kvCacheStrategy = kvCacheStrategy
+         self.kvCacheSize = kvCacheSize
+         self.perTokenInputProvider = perTokenInputProvider
++        self.staticInputBuffers = staticInputBuffers
+     }
+ 
+     /// Returns the KV cache size in tokens that the engine uses for a given context length.

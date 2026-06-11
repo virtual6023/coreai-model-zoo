@@ -36,6 +36,27 @@ proportional), final logit softcap `tanh(z/30)·30`. RMSNorm multiplies by `weig
   an in-graph escape — write-mask-as-input blend — is Mac-GPU-proven, device test pending) — see
   [`../knowledge/performance-ceiling.md`](../knowledge/performance-ceiling.md).
 
+### Pipelined-engine fast path (2026-06-11 — the post-kernel configs)
+
+Gemma 4 also rides Apple's `coreai-pipelined` engine (zero custom kernels) once the giant
+per-layer-embedding table gets an engine hook — two variants, conversion in
+[`../conversion/export_gemma4_decode_pipelined.py`](../conversion/export_gemma4_decode_pipelined.py),
+engine patches in [`../apps/`](../apps/), full method + traps in
+[`../knowledge/pipelined-engine.md`](../knowledge/pipelined-engine.md):
+
+| config (int4-linear weights, oracle 8/8 everywhere) | M4 Max decode / prefill | iPhone 17 Pro decode / prefill |
+|---|---|---|
+| `int4lin` — PLE rows as a **per-token input** (host mmap provider) | 70.9 / 85.3 | **26.5 / 40.5** (AOT h18p) |
+| `int4lin --tbl` — PLE table as a **static graph input** (in-graph gather) | **77.0 / 87.1** | ~27–31 / ~27–32 (AOT h18p, owned buffers + memory entitlement) |
+
+- **Mac: `--tbl` is the best gemma4 config we have** (+30–36% over the kernel CLI above; the
+  decode-vs-prefill gap closes because no token ever round-trips to the CPU).
+- **iPhone: the provider config stays the recommendation** — every statically-bound GB pays a
+  per-encode residency tax on iOS (~5–10 ms/step owned, more for mmap), which buys ~+15%
+  decode but costs ~20% prefill; details and the buffer-mode trap table in the knowledge page.
+- Both still beat the kernel monolith row above on device (22–24), with on-device KV growth
+  and on-GPU argmax for free.
+
 ### What it took (the interesting parts)
 
 1. **Fixed-shape host-cache decode** — the beta crashes on any data-indexed in-graph KV write

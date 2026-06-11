@@ -32,12 +32,14 @@ Requires the **Xcode 27 beta** and [xcodegen](https://github.com/yonaskolb/Xcode
 #    NDArray) and, for CoreAIChat's Qwen ⚡pipelined mode, the `CoreAILM` engine stack.
 #    Clone coreai-models AT THIS REPO'S ROOT and apply the patch stack IN ORDER
 #    (CoreAIShared product export → pipelined-engine extra states for SSM conv/rec caches →
-#    pipelined-engine per-token inputs for host-gathered tables like Gemma 4's PLE rows;
+#    pipelined-engine per-token inputs for host-gathered tables like Gemma 4's PLE rows →
+#    pipelined-engine static inputs for in-graph gather tables bound as constant buffers;
 #    the Qwen apps only need the first two, but the stack is additive — apply it whole):
 git clone https://github.com/apple/coreai-models
 git -C coreai-models apply ../apps/coreai-shared-product.patch \
                            ../apps/coreai-pipelined-extra-states.patch \
-                           ../apps/coreai-pipelined-per-token-inputs.patch
+                           ../apps/coreai-pipelined-per-token-inputs.patch \
+                           ../apps/coreai-pipelined-static-inputs.patch
 
 # 2. tokenizer.json is not committed (tens of MB). Fetch it from the upstream model repo into
 #    the app's Resources/tokenizer/ (tokenizer_config + chat template are already there):

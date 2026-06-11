@@ -45,7 +45,12 @@ overlay** of that package. Concretely, the additions are:
   kernels; int4-LINEAR per-block — eager-palettized k-means LUTs measure 2.25× slower at the
   same bytes). Needs the full patch stack incl.
   `../apps/coreai-pipelined-per-token-inputs.patch`, `COREAI_CHUNK_THRESHOLD=1`, and a
-  `PerTokenInputProvider` that dequants the int8 PLE row dump per token.
+  `PerTokenInputProvider` that dequants the int8 PLE row dump per token. Add **`--tbl`** to
+  export the variant whose PLE table is a STATIC graph input instead (in-graph gather; no
+  provider, no per-token decode wait — **77.0 tok/s on M4 Max**, the best Mac gemma4 config;
+  needs `../apps/coreai-pipelined-static-inputs.patch` + an app that binds the two dump files
+  via `EngineOptions.staticInputBuffers` — buffer-mode traps in
+  [`../knowledge/pipelined-engine.md`](../knowledge/pipelined-engine.md)).
 - **Granite 4.0-H pipelined (in this dir): `export_granite4h_decode_pipelined.py [fp16|int8lin]`** —
   the first Mamba2/SSM-scan rider: at S=1 the selective scan is a single recurrence step
   (loop-free, no while_loop), states = KV (4 attn layers) + conv/SSM stacks (= the ≤2

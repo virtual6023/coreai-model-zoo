@@ -64,6 +64,27 @@ AI's. The official engine is ~2× **faster** than MLX on the same machine (qwen3
   ~2.4 ms/token on M4 Max and ~13 ms/token on iPhone 17 Pro for Gemma-4-E2B (the
   on-GPU-argmax + on-device-KV wins survive; the gather itself is ~0.1 ms). Default-off:
   two-input models run the engine bit-identically to before (qwen 204 tok/s regression intact).
+- **Constant gather tables can instead ride as STATIC inputs — the static-inputs patch**
+  ([`../apps/coreai-pipelined-static-inputs.patch`](../apps/coreai-pipelined-static-inputs.patch))
+  removes that per-token serialization entirely: export the table itself as a graph INPUT
+  (`ple_table [V, L*ld] int8` + `ple_scale [V] f32`) gathered in-graph by `index_select` on
+  `input_ids` (int8 table input + gather + cast + scale-multiply all lower cleanly on the GPU
+  delegate, bit-exact vs a numpy reference), and hand the engine the buffers once via
+  `EngineOptions.staticInputBuffers` — bound unchanged on every encode, no provider call, no
+  S=1 constraint, no decode wait on the sampled token, so the full 3-deep pipeline survives
+  in decode (decode ≈ prefill). Two traps, both invisible until you bench: the runtime
+  ingests REGULAR inputs by value, so feeding a 2.35 GB table through a python NDArray costs
+  ~2.6 s/step — only the Swift `AsyncValue`-over-MTLBuffer path is viable; and **buffer mode
+  decides everything**: a `PROT_READ`-only mmap under `makeBuffer(bytesNoCopy:)` costs
+  ~65 ms/GB *per encode* on the macOS delegate (silent, size-proportional — 4.8 tok/s instead
+  of 77), a writable COW mmap (`PROT_READ|PROT_WRITE`, `MAP_PRIVATE`) is free on the Mac but
+  still pays ~6–7 ms/GB/encode on iPhone (file-backed residency), and an OWNED
+  `storageModeShared` buffer (read the file in once) is free on the Mac and cheapest on
+  iPhone but is dirty memory against the jetsam limit — budget it (a 12 GB iPhone 17 Pro
+  gives an entitled app ~6.4 GB and the gemma4 trials peak ~2 GB above the table bytes) and
+  ship the `increased-memory-limit` entitlement. Every statically-bound byte pays the iPhone
+  per-encode tax, so bind ONLY what cannot live in-graph (gemma4: the PLE table — moving the
+  0.8 GB embed table out as a 3rd input measured strictly worse).
 
 ## The export trick: decode-only, loop-free
 
@@ -154,6 +175,7 @@ settles the LUT question — same bytes, 2.25× apart:
 | int4 k-means g32 (16-entry LUT) | 1.9 GB | 41.0 | 31.5 | LUT dequant dominates |
 | int8 linear per-block-32 | 3.1 GB | 71.9 | 57.2 | BW-bound (~165 GB/s effective) |
 | **int4 linear per-block-32** | 2.0 GB | **85.3** | **70.9** | ship class; +20–25% over the zoo's kernel CLI |
+| int4lin `--tbl` (PLE table as static input) | 2.0 GB + 2.35 GB table | 87.1 | **77.0** | +8.6% decode on Mac (no per-token wait); see the static-inputs bullet for the iPhone buffer-tax economics |
 
 Rules of thumb: **eager-palettized k-means LUT dequant is the slow class on this delegate at
 ANY entry count** — 256-entry int8 (qwen 113) and 16-entry int4 (gemma 31.5) both lose to
@@ -273,9 +295,10 @@ vs the best previous iPhone config (fused int8 Metal-kernel static monolith): 42
 
 Apple's `coreai-models` repo is **issues-only** (no PRs), so engine capabilities ship from this
 repo as a **patch stack** in [`../apps/`](../apps/), applied in order on a fresh upstream clone
-(`git -C coreai-models apply <p1> <p2> <p3>` — see [`../apps/README.md`](../apps/README.md)):
+(`git -C coreai-models apply <p1> <p2> <p3> <p4>` — see [`../apps/README.md`](../apps/README.md)):
 `coreai-shared-product.patch` → `coreai-pipelined-extra-states.patch` →
-`coreai-pipelined-per-token-inputs.patch` (each applies cleanly after the previous and the
-full stack builds with `swift build -c release`). If Apple opens the engine, the two
-capabilities worth upstreaming are: N extra fixed-shape states, and the per-token host-input
-hook (the Gemma-4/PLE enabler — `EngineOptions.perTokenInputProvider`).
+`coreai-pipelined-per-token-inputs.patch` → `coreai-pipelined-static-inputs.patch` (each
+applies cleanly after the previous and the full stack builds with `swift build -c release`).
+If Apple opens the engine, the three capabilities worth upstreaming are: N extra fixed-shape
+states, the per-token host-input hook, and the static-input buffer hook (the Gemma-4/PLE
+enablers — `EngineOptions.perTokenInputProvider` / `EngineOptions.staticInputBuffers`).

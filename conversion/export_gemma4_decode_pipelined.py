@@ -18,16 +18,27 @@ Modes:
             2.25x SLOWER than int4lin at the same bytes: eager-palettized LUT
             dequant is the slow class on this delegate (kept for evidence)
 
+--tbl (combine with a mode, e.g. `int4lin --tbl`): the PLE table itself becomes a
+STATIC graph INPUT (ple_table [V,L*ld] int8 + ple_scale [V] f32, gathered in-graph
+by input_ids) instead of a per-token ple_tokens input. No host provider, no decode
+wait on the sampled token -> the engine's full pipeline survives in decode
+(decode ~= prefill). Needs apps/coreai-pipelined-static-inputs.patch and an app
+that binds the two dump files via EngineOptions.staticInputBuffers (OWNED
+storageModeShared buffers preferred — see knowledge/pipelined-engine.md for the
+buffer-mode traps).
+
 Numerics gate AFTER export: teacher-forced oracle 8/8 on the GPU delegate with the
 int8 mmap PLE gather (probe pattern in the source repo: _smoke/probe_gemma4_decode_parity.py).
 Measured M4 Max (release, chunk=1, p128 g256): int4lin 70.9 decode / 85.3 prefill;
-int8lin 57.2 / 71.9; int4km 31.5 / 41.0 (k-means LUT dequant is the slow class).
+int4lin --tbl 77.0 / 87.1; int8lin 57.2 / 71.9; int4km 31.5 / 41.0 (k-means LUT
+dequant is the slow class).
 
 Run (from a coreai-models checkout with the model overlay):
-  python export_gemma4_decode_pipelined.py [fp16|int8lin|int4lin|int4km] [--max-ctx 4096]
+  python export_gemma4_decode_pipelined.py [fp16|int8lin|int4lin|int4km] [--tbl] [--max-ctx 4096]
 Requires the gemma4_text + gemma4_pipelined model overlay (see conversion/README.md) and,
-to RUN the bundle, the full Swift patch stack incl. apps/coreai-pipelined-per-token-inputs.patch
-+ COREAI_CHUNK_THRESHOLD=1 + a PerTokenInputProvider that gathers the PLE rows.
+to RUN the bundle, the full Swift patch stack (provider bundles: through
+apps/coreai-pipelined-per-token-inputs.patch; --tbl bundles: also
+apps/coreai-pipelined-static-inputs.patch) + COREAI_CHUNK_THRESHOLD=1.
 """
 from __future__ import annotations
 
@@ -45,6 +56,7 @@ from coreai_models.export.macos import export_to_coreai
 from coreai_models.models.macos.gemma4_pipelined import (
     PIPELINED_STATE_NAMES,
     Gemma4PipelinedForCausalLM,
+    Gemma4PipelinedTblForCausalLM,
 )
 from coreai_models.models.macos.gemma4_text import Gemma4ForCausalLM
 
@@ -129,10 +141,18 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("mode", nargs="?", default="int4km",
                     choices=["fp16", "int8lin", "int4lin", "int4km"])
+    ap.add_argument("--tbl", action="store_true",
+                    help="table-as-INPUT variant: ple_table/ple_scale ride as STATIC "
+                         "graph inputs (no per-token provider, full decode "
+                         "pipelining). Needs the engine static-inputs patch + "
+                         "--raw-dir.")
+    ap.add_argument("--raw-dir", default="gemma4_gather_raw",
+                    help="gather-table dump dir (embed_per_layer.i8/.scale.f32 + "
+                         "meta.json)")
     ap.add_argument("--max-ctx", type=int, default=4096)
     ap.add_argument("--out-dir", default="exports")
     args = ap.parse_args()
-    name = f"gemma4_e2b_decode_{args.mode}"
+    name = f"gemma4_e2b_decode_{args.mode}" + ("_tbl" if args.tbl else "")
 
     model_dir = snapshot_download(
         HF_ID, allow_patterns=["*.safetensors", "*.safetensors.index.json", "*.json"])
@@ -141,14 +161,30 @@ def main() -> None:
     cfg = causal.config
 
     # The giant PLE table must NOT be traced into the graph (it arrives per token
-    # as the ple_tokens input) — drop the module so nothing can reference it and
-    # ~4.7 GB leaves RAM before tracing.
+    # as the ple_tokens input / per-row-int8 as the ple_table input) — drop the
+    # module so nothing can reference it and ~4.7 GB leaves RAM before tracing.
     del causal.model.embed_tokens_per_layer
 
-    model = Gemma4PipelinedForCausalLM(causal).eval()
-    spec = model.build_export_spec(
-        target_dtype=DTYPE, max_context_length=args.max_ctx,
-        trace_kv_len=TRACE_KV_CACHE_SEQ_LEN)
+    if args.tbl:
+        import numpy as np
+
+        raw = Path(args.raw_dir)
+        meta = json.loads((raw / "meta.json").read_text())
+        v, pld = meta["V"], meta["PLD"]
+        ple_q = torch.from_numpy(np.array(
+            np.memmap(raw / "embed_per_layer.i8", np.int8, "r", shape=(v, pld))))
+        ple_s = torch.from_numpy(
+            np.fromfile(raw / "embed_per_layer.scale.f32", np.float32))
+        model = Gemma4PipelinedTblForCausalLM(causal).eval()
+        spec = model.build_export_spec(
+            target_dtype=DTYPE, max_context_length=args.max_ctx,
+            trace_kv_len=TRACE_KV_CACHE_SEQ_LEN,
+            ple_table=ple_q, ple_scale=ple_s)
+    else:
+        model = Gemma4PipelinedForCausalLM(causal).eval()
+        spec = model.build_export_spec(
+            target_dtype=DTYPE, max_context_length=args.max_ctx,
+            trace_kv_len=TRACE_KV_CACHE_SEQ_LEN)
 
     if args.mode == "int4km":
         from coreai_models.export.compression import palettize_pytorch_model

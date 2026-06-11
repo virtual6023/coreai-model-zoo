@@ -89,8 +89,15 @@ Quantization sweep (M4 Max, p=128 g=256, release `llm-benchmark`):
 |---|---:|---:|---|
 | fp16 | 1.4 GB | 175.8 | == torch fp16, 24/24 greedy |
 | int8 k-means g32 | 1.0 GB | 113.2 | EXACT — but the 256-entry LUT gather is slow on the GPU delegate |
-| **int8 linear per-block-32 (ship)** | **1.0 GB** | **204.1** | **token-for-token == fp16-GPU; 16/16 single-step top-1 vs the fp32 HF oracle + HF-cache-seeded decode step** |
-| + untied int8 lm_head | 1.3 GB | 201.4 | 16/16 oracle PASS — **no speed win** (head matvec isn't the critical path on this delegate); int8lin stays the ship config |
+| int8 linear per-block-32 (`int8lin`) | 1.0 GB | 204.1 | token-for-token == fp16-GPU; 16/16 single-step top-1 vs the fp32 HF oracle + HF-cache-seeded decode step |
+| + untied int8 lm_head, block-32 with clipping (`int8hu`) | 1.3 GB | 201.4 | 16/16 PASS but no Mac win — shelved at first; the 2B later showed "no Mac win" ≠ "no device win" |
+| **+ untied per-channel absmax int8 head (ship)** — `int8hu --head-quant perchan --head-sym` | 1.3 GB | **210.0** | 16/16 + decode step; greedy rollouts token-identical to int8lin on both fixed prompts |
+
+**The head config is the iPhone lever**: on the Mac the head matvec is largely
+hidden (+3%), but on the bandwidth-bound phone the fp16 head was **54% of the
+~0.95 GB per-token read** — quantizing it took the device from 50.3–51.5 to
+**69.7–74.0 tok/s (+40%)**. Use absmax `symmetric` for the head (the clipping
+qscheme corrupts big-vocab heads — discovered on the 2B, see the 2B section).
 
 Notes: k-means LUTs aren't slow per se (official qwen3-0.6b runs int4-km g8 at
 1000+ tok/s) — the 256-entry int8 LUT is the slow case, 16-entry int4 is fast;
@@ -113,17 +120,20 @@ the engine default warms shape 256 — `llm-runner` needs
 real trial).
 
 **iPhone 17 Pro (measured 2026-06-11, Release build, one-shot benchmark app on
-the patched engine): decode 50.3–51.5 tok/s, 24/24 token-identical to the
-Mac-GPU sequences on both fixed prompts — beats the shipped int8v3
-fused-kernel monolith (42.5–45.4) by ~12–20%** with zero custom kernels. The loop-free
-graph lowers cleanly on the iOS MPSGraph GPU delegate (no execute crash);
-cold GPU specialization 4.8 s, warm load 0.2 s. Caveat: pipelined prefill is
-S=1 (~51 tok/s), so for long prompts the static q16 chunked-prefill companion
-(147 tok/s) still wins TTFT — chunkwise-parallel GDN prefill is the open fix.
-fp16×pipelined was correctly predicted to lose (~44 ceiling) and was not run.
+the patched engine): the ship config (int8 + per-channel absmax int8 head)
+decodes 69.7–74.0 tok/s, 24/24 token-identical to the Mac-GPU sequences on
+both fixed prompts — +40% over the fp16-head int8lin (50.3–51.5) and ~1.6×
+the shipped int8v3 fused-kernel monolith (42.5–45.4)** with zero custom
+kernels. The loop-free graph lowers cleanly on the iOS MPSGraph GPU delegate
+(no execute crash); warm load 2.9 s (int8lin: cold 4.8 s / warm 0.2 s).
+Caveat: pipelined prefill is S=1 (≈ decode, 72–74 tok/s), so for very long
+prompts the static q16 chunked-prefill companion (147 tok/s) still wins TTFT —
+chunkwise-parallel GDN prefill is the open fix. fp16×pipelined was correctly
+predicted to lose (~44 ceiling) and was not run.
 
 Export: [`../conversion/export_qwen3_5_decode_pipelined.py`](../conversion/export_qwen3_5_decode_pipelined.py)
-(`int8lin` default; `fp16` / `int8` k-means / `int8hu` untied-head for comparison).
+(ship: `int8hu --head-quant perchan --head-sym`; `int8lin` fp16-head default;
+`fp16` / `int8` k-means for comparison).
 
 ### Qwen3.5-2B on the same fast path: 161 tok/s on M4 Max, 28–30 on iPhone
 

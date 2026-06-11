@@ -24,12 +24,12 @@ overlay** of that package. Concretely, the additions are:
   ring) / `convert_head.py` / `check_pipeline.py` / `verify_*` — the full convert+verify harness.
 - Qwen3.5: parity ladder + fp16/int8 + head-split + stateful-palettize harnesses.
 - On-device export (kept artifacts): `export_qwen3_5.py [0.8b|2b]`, `export_gemma4_frontend.py`.
-- **Qwen3.5 pipelined fast path (in this dir): `export_qwen3_5_decode_pipelined.py [int8lin]`** —
-  decode-only loop-free bundle for Apple's `coreai-pipelined` GPU engine, 204 tok/s on M4 Max
-  (3.5× the custom-kernel CLI). `--hf-id Qwen/Qwen3.5-2B` exports the 2B on the same path;
-  the 2B ship config is `int8hu --head-quant perchan --head-sym` (per-channel **absmax** int8
-  head — clipping corrupts big-vocab heads): **161 tok/s M4 Max / 28–30 iPhone 17 Pro**
-  (fp16-head int8lin: 127 / 19–21). Needs the Swift engine patch
+- **Qwen3.5 pipelined fast path (in this dir): `export_qwen3_5_decode_pipelined.py`** —
+  decode-only loop-free bundles for Apple's `coreai-pipelined` GPU engine. Ship config for
+  BOTH sizes is `int8hu --head-quant perchan --head-sym` (per-channel **absmax** int8 head —
+  clipping corrupts big-vocab heads): 0.8B **210 tok/s M4 Max / 69.7–74.0 iPhone 17 Pro**
+  (fp16-head int8lin: 204 / 50.3–51.5; custom-kernel CLI was 58.5); `--hf-id Qwen/Qwen3.5-2B`
+  → 2B **161 / 28–30** (int8lin: 127 / 19–21). Needs the Swift engine patch
   `../apps/coreai-pipelined-extra-states.patch` and `COREAI_CHUNK_THRESHOLD=1` at run time.
 - **LFM2.5 pipelined (in this dir): `export_lfm2_decode_pipelined.py [fp16|int8lin]`** — the
   first non-Qwen rider: LiquidAI's conv+attention hybrid, decode-only S=1 (loop-free by

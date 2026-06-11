@@ -3,8 +3,9 @@
 > The single highest-leverage Core AI LLM finding in this project (2026-06-10/11, verified on
 > M4 Max + iPhone 17 Pro): the same `.aimodel` weights decode **3.5× faster** when Apple's
 > `coreai-pipelined` engine drives them instead of a hand-rolled per-token `fn.run()` loop —
-> Qwen3.5-0.8B int8: **204 tok/s vs 58.5 on M4 Max, 50.3–51.5 vs 42.5–45.4 (fused-kernel
-> monolith) on iPhone 17 Pro**. This page is how to put a model on that engine, every trap we
+> Qwen3.5-0.8B int8: **210 tok/s vs 58.5 on M4 Max, 69.7–74.0 vs 42.5–45.4 (fused-kernel
+> monolith) on iPhone 17 Pro** (ship config incl. the per-channel absmax int8 head; fp16-head
+> figures were 204 / 50.3–51.5). This page is how to put a model on that engine, every trap we
 > hit, and what doesn't fit. Working artifacts: the qwen3.5 fast path in
 > [`../conversion/export_qwen3_5_decode_pipelined.py`](../conversion/export_qwen3_5_decode_pipelined.py)
 > + [`../apps/coreai-pipelined-extra-states.patch`](../apps/coreai-pipelined-extra-states.patch)
@@ -201,9 +202,12 @@ scales are a slow class on this delegate** (97.6 tok/s vs g32's 314 — 3.2×; s
 and int4-linear's BW win is shape-dependent (LFM +24%, gemma4 +24%, qwen-2B ~flat).
 The eager quantizer
 **silently skips tied weights** — clone the embedding table first if you actually want the
-head quantized, and measure + gate before believing it helps: untied int8 head was a no-win
-on the 0.8B (204→201, head not critical path) but on the 2B it's **+26% (127→161)** — the
-248K-vocab fp16 head is ~43% of the 2B's per-token read.
+head quantized, and measure + gate before believing it helps — **on the surface that is
+actually bandwidth-bound**: the untied int8 head looked like a no-win on the 0.8B *on the
+Mac* (204→210, +3% — the Mac pipeline hides the head) but the same change is **+40% on
+iPhone (50.3–51.5 → 69.7–74.0)** where the fp16 head was 54% of the per-token read; on the
+2B it's +26% on BOTH surfaces (127→161 Mac, 19–21→28–30 iPhone). "No win on the Mac" does
+NOT mean "no win on the phone" — re-test head quant on every BW-bound surface.
 **Big-vocab heads: quantize with absmax `symmetric`, never `symmetric_with_clipping`**
 (RESOLVED 2026-06-11): with the default clipping qscheme the 2B head flips 6/16 oracle
 top-1s with a tell-tale signature — one sweep position craters to cos 0.62 while neighbors
@@ -211,8 +215,9 @@ sit at 0.999x = outlier head rows clipped, not uniform noise. Plain `symmetric` 
 at identical speed at BOTH granularities tried (per-channel axis-0 AND per-block-32) — the
 killer was the clipping, not the bits or the block shape. Ship shape: per-channel axis-0
 (one scale per vocab row, 0.5 MB vs 30 MB of block scales). Measured
-(`int8hu --head-quant perchan --head-sym`): **161 tok/s M4 Max, 28–30 tok/s iPhone 17 Pro
-(≥ the CoreML-2B port's ~27)**, greedy rollouts token-identical to the fp16-head bundle.
+(`int8hu --head-quant perchan --head-sym`): 2B **161 tok/s M4 Max, 28–30 tok/s iPhone 17
+Pro (≥ the CoreML-2B port's ~27)**; 0.8B **210 / 69.7–74.0** — greedy rollouts
+token-identical to the fp16-head bundles in both cases.
 The transformer body is fine WITH clipping (int8lin gates 16/16 everywhere) — this rule is
 specifically about fat-tailed embedding/head tables.
 
@@ -237,16 +242,20 @@ specifically about fat-tailed embedding/head tables.
   a 14/16 there gates nothing. Pick a prompt that clears the margin floor (ours: ≥ 0.40)
   and keep the 16/16 criterion strict.
 
-## Measured end state (Qwen3.5-0.8B int8lin, 2026-06-11)
+## Measured end state (Qwen3.5-0.8B, 2026-06-11)
 
 | surface | prefill | decode |
 |---|---:|---:|
-| M4 Max, `llm-benchmark` | 198.8 | **204.1** |
-| iPhone 17 Pro, one-shot runner | 51.2 | **50.3–51.5** |
-| iPhone 17 Pro, chat app (CoreAIChat Qwen mode, 220-tok turn) | 50.6 | **47.9** |
+| M4 Max, ship (int8 + perchan absmax int8 head) | 211.6 | **210.0** |
+| iPhone 17 Pro, ship, one-shot runner | 72.0–73.9 | **69.7–74.0** |
+| M4 Max, fp16-head `int8lin` | 198.8 | 204.1 |
+| iPhone 17 Pro, fp16-head `int8lin` | 51.2 | 50.3–51.5 |
+| iPhone 17 Pro, chat app (CoreAIChat Qwen mode = int8lin, 220-tok turn) | 50.6 | 47.9 |
 
-vs the best previous iPhone config (fused int8 Metal-kernel static monolith): 42.5–45.4 —
-**+12–20% with zero custom kernels**, and the same bundle runs on macOS at 204.
+vs the previous best iPhone config (fused int8 Metal-kernel static monolith, 42.5–45.4):
+the ship config is **~1.6× with zero custom kernels**, and the same bundle runs on macOS
+at 210. (CoreAIChat still downloads the int8lin bundle; switching its default is an
+app-wiring change, tracked separately.)
 
 ## What fits next / what doesn't
 

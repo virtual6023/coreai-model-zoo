@@ -160,17 +160,21 @@ def main() -> None:
                     help="int8hu only: lm_head weight granularity (ship=block32; perchan is BROKEN on the beta GPU delegate)")
     ap.add_argument("--head-sym", action="store_true",
                     help="int8hu only: plain symmetric (absmax, no clipping) for the head")
+    ap.add_argument("--num-layers", type=int, default=None,
+                    help="debug: truncated-layer export (engine-contract de-risk)")
     args = ap.parse_args()
 
     short = args.hf_id.rsplit("/", 1)[-1].lower().replace(".", "_").replace("-", "_")
     name = f"{short}_decode_{args.mode}"
     if args.mode == "int8hu" and (args.head_quant != "block32" or args.head_sym):
         name += f"_{args.head_quant}" + ("_sym" if args.head_sym else "")
+    if args.num_layers is not None:
+        name += f"_l{args.num_layers}"
 
     print(f"loading {args.hf_id} fp16 ...")
     model = Qwen3_5StatefulForCausalLM.from_hf_memory_efficient(
         args.hf_id, max_context_length=args.max_ctx, target_dtype=DTYPE,
-        hf_config_attr="text_config")
+        hf_config_attr="text_config", num_layers=args.num_layers)
     model.eval()
     cfg = model.config
 

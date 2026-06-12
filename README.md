@@ -11,6 +11,7 @@ on-device, with the conversion code and a knowledge base. Successor to
 | **Qwen3.5-0.8B** | [🤗 qwen3.5-0.8B-CoreAI](https://huggingface.co/mlboydaisuke/qwen3.5-0.8B-CoreAI) | Apache-2.0 |
 | **Qwen3.5-2B** | [🤗 qwen3.5-2B-CoreAI](https://huggingface.co/mlboydaisuke/qwen3.5-2B-CoreAI) | Apache-2.0 |
 | **Qwen3.6-35B-A3B** (MoE, Mac-only) | [🤗 Qwen3.6-35B-A3B-CoreAI](https://huggingface.co/mlboydaisuke/Qwen3.6-35B-A3B-CoreAI) | Apache-2.0 |
+| **GLM-4.7-Flash** (MoE + MLA, Mac-only) | [🤗 GLM-4.7-Flash-CoreAI](https://huggingface.co/mlboydaisuke/GLM-4.7-Flash-CoreAI) | MIT |
 | **Gemma 4 E2B** (text, incl. official-QAT int4) | [🤗 gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI) | Gemma |
 | **Gemma 4 E4B** (text, official-QAT int4) | [🤗 gemma-4-E4B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E4B-CoreAI) | Gemma |
 | **LFM2.5-1.2B-Instruct** | [🤗 LFM2.5-1.2B-CoreAI](https://huggingface.co/mlboydaisuke/LFM2.5-1.2B-CoreAI) | LFM Open License v1.0 |
@@ -31,12 +32,16 @@ on-device, with the conversion code and a knowledge base. Successor to
 | **Gemma 4 E4B** (official QAT) | **15.1** | — | **55.8** |
 | **Gemma 4 E2B VL** (image+text, official QAT) | **25.5** | — | **82.4** |
 | **Qwen3.6-35B-A3B** (MoE, 35B/~3B active, Mac-only) | — | — | **30.9** |
+| **GLM-4.7-Flash** (MoE + MLA, 30B/~3B active, Mac-only) | — | — | **20.3** |
 
 Measured on the iOS 27 / macOS 27 beta, Apple's `coreai-pipelined` GPU engine, zero custom
 kernels (ANE column excepted). Prefill, sizes, per-model caveats: [`zoo/`](zoo/).
 
 - **Qwen3.6-35B-A3B** (MoE, 35B/~3B active) — 30.9 tok/s is expert-gather-bound in the
   current beta; [`zoo/qwen3.6.md`](zoo/qwen3.6.md)
+- **GLM-4.7-Flash** (MoE + MLA, 30B/~3B active) — the zoo's first Multi-head Latent Attention
+  model; full-MLA attention on all 47 layers (absorbed-MLA is the speed follow-up);
+  [`zoo/glm-4.7-flash.md`](zoo/glm-4.7-flash.md)
 - **RF-DETR** — 33–39 FPS live on iPhone 17 Pro, 8.6–19.1 ms/frame on M4 Max;
   [`zoo/rf-detr.md`](zoo/rf-detr.md)
 - **Gemma 4 E2B VL** — same text decoder + a 3-line image splice;

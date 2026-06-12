@@ -43,7 +43,15 @@ Measured (medium, M4 Max): cpu/gpu fp32 = worst-IoU 1.000, 54/54 detections.
 Run:
   python export_rf_detr.py --variant medium \
       [--dtype float32] [--out-dir exports] \
-      [--verify-images img1.jpg,img2.jpg] [--unit gpu]
+      [--verify-images img1.jpg,img2.jpg] [--unit gpu] [--split]
+
+--split additionally emits rfdetr-<variant>_backbone.aimodel (pure ViT,
+image -> features) + rfdetr-<variant>_head.aimodel (deformable decoder,
+features -> dets/labels; position encodings baked as constants), gated
+bit-exact against the monolith chain on CPU. This is the deployment shape for
+per-stage compute-unit preferences (e.g. backbone on the Neural Engine) — note
+that on iOS 27 beta the runtime still falls back to the GPU delegate even for
+the pure-ViT backbone, so today this is infrastructure, not a speedup.
 
 Deps: pip install rfdetr==1.7.1 (+ the coreai stack; torch <= 2.11).
 """
@@ -336,6 +344,99 @@ async def verify(ref_wrapper, res, out_path: Path, image_paths, dtype, unit):
     return all_pass
 
 
+class BackboneModule(torch.nn.Module):
+    """Normalization + ViT backbone: image [1,3,R,R] -> features [1,C,R/16,R/16]."""
+
+    def __init__(self, wrapper):
+        super().__init__()
+        self.wrapper = wrapper
+
+    def forward(self, image):
+        x = (image - self.wrapper.mean) / self.wrapper.std
+        srcs, _, _ = self.wrapper.core.backbone(x)
+        return srcs[0]
+
+
+class HeadModule(torch.nn.Module):
+    """forward_export minus the backbone; position encoding baked as a constant."""
+
+    def __init__(self, core, pos0):
+        super().__init__()
+        self.core = core
+        self.register_buffer("pos0", pos0)
+
+    def forward(self, features):
+        core = self.core
+        refpoint = core.refpoint_embed.weight[: core.num_queries]
+        query_feat = core.query_feat.weight[: core.num_queries]
+        hs, ref_unsigmoid, _, _ = core.transformer(
+            [features], None, [self.pos0], refpoint, query_feat)
+        delta = core.bbox_embed(hs)
+        cxcy = delta[..., :2] * ref_unsigmoid[..., 2:] + ref_unsigmoid[..., :2]
+        wh = delta[..., 2:].exp() * ref_unsigmoid[..., 2:]
+        return torch.concat([cxcy, wh], dim=-1), core.class_embed(hs)
+
+
+def export_split(wrapper, variant: str, res: int, out_dir: Path):
+    import coreai.runtime as rt
+
+    x = torch.rand(1, 3, res, res)
+    core = wrapper.core
+    with torch.no_grad():
+        srcs, _, poss = core.backbone((x - wrapper.mean) / wrapper.std)
+    backbone_path = out_dir / f"rfdetr-{variant}_backbone.aimodel"
+    head_path = out_dir / f"rfdetr-{variant}_head.aimodel"
+    _convert_module(
+        BackboneModule(wrapper).eval(), (x,), ["image"], ["features"], backbone_path)
+    _convert_module(
+        HeadModule(core, poss[0].detach().clone()).eval(),
+        (srcs[0],), ["features"], ["dets", "labels"], head_path)
+
+    async def gate():
+        async def load(p):
+            m = await rt.AIModel.load(p, rt.SpecializationOptions.cpu_only())
+            return m.load_function("main")
+
+        fb = await load(backbone_path)
+        fh = await load(head_path)
+        fm = await load(out_dir / f"rfdetr-{variant}_float32.aimodel")
+        xi = torch.rand(1, 3, res, res, generator=torch.Generator().manual_seed(0))
+        feats = (await fb({"image": rt.NDArray(xi.numpy())}))["features"]
+        split = await fh({"features": feats})
+        mono = await fm({"image": rt.NDArray(xi.numpy())})
+        for k in ("dets", "labels"):
+            d = float(np.abs(mono[k].numpy() - split[k].numpy()).max())
+            print(f"[split-gate:{k}] max|d| vs monolith = {d:.2e}")
+            if d > 1e-4:
+                raise SystemExit(f"split gate FAILED on {k}")
+        print("[split-gate] PASS (chain == monolith)")
+
+    asyncio.run(gate())
+
+
+def _convert_module(mod, inputs, in_names, out_names, out_path: Path):
+    import coreai.runtime as rt
+    from coreai_torch import TorchConverter, get_decomp_table
+
+    real_assert = torch._assert
+    torch._assert = lambda *a, **k: None
+    try:
+        with torch.no_grad():
+            ep = torch.export.export(mod, inputs)
+    finally:
+        torch._assert = real_assert
+    ep = ep.run_decompositions(get_decomp_table())
+    prog = TorchConverter().add_exported_program(
+        exported_program=ep, input_names=in_names, output_names=out_names).to_coreai()
+    prog.optimize()
+    shutil.rmtree(out_path, ignore_errors=True)
+    meta = rt.AIModelAssetMetadata()
+    meta.license = "Apache-2.0"
+    prog.save_asset(out_path, meta)
+    size = sum(f.stat().st_size for f in out_path.rglob("*") if f.is_file()) / 1e6
+    print(f"[convert] saved {out_path} ({size:.1f} MB)")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--variant", choices=VARIANTS, default="medium")
@@ -344,6 +445,7 @@ def main():
     ap.add_argument("--verify-images", default=None, help="comma-separated real images")
     ap.add_argument("--unit", default="cpu", help="verify unit: cpu | gpu | neural_engine")
     ap.add_argument("--skip-convert", action="store_true", help="verify an existing artifact")
+    ap.add_argument("--split", action="store_true", help="also emit backbone/head split bundles")
     args = ap.parse_args()
 
     dtype = {"float32": torch.float32, "float16": torch.float16}[args.dtype]
@@ -354,6 +456,10 @@ def main():
     if not args.skip_convert:
         export_wrapper = copy.deepcopy(wrapper) if dtype != torch.float32 else wrapper
         export_and_convert(export_wrapper, res, dtype, out_path)
+        if args.split:
+            if dtype != torch.float32:
+                raise SystemExit("--split supports float32 only")
+            export_split(wrapper, args.variant, res, Path(args.out_dir))
 
     if args.verify_images:
         ok = asyncio.run(

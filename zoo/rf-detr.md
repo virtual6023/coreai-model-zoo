@@ -79,6 +79,25 @@ Live-camera reference app: **DetectCamera** in
 `CameraFeed` + `ObjectDetector`, box overlay, in-app Hub download; the whole ML
 surface is two calls).
 
+## Split deployment & the ANE question (measured)
+
+`export_rf_detr.py --split` emits `rfdetr-<v>_backbone.aimodel` (pure ViT) +
+`rfdetr-<v>_head.aimodel` (deformable decoder, position encodings baked) —
+the chain gates **bit-exact** vs the monolith, and the bundles are on the Hub
+under `split/`. Purpose: per-stage compute units, i.e. the ANE-friendly
+backbone on `.neuralEngine` while the gather-heavy head stays on `.gpu`
+(`ObjectDetector(backboneAt:headAt:)` in CoreAIKit).
+
+Measured on iPhone 17 Pro, iOS 27 beta: **the runtime does not engage the ANE
+for these graphs** — the monolith under `.neuralEngine` preference falls back
+wholesale, and even the pure-ViT backbone executes on the GPU delegate
+(identical detection fingerprint to the GPU run, no ANE-compile pause, timing
+equal at the same thermal state; the split costs ~5 ms of two-graph handoff).
+GPU monolith stays the ship config. The split exists for the day ANE
+placement starts working — the prize is thermal: the GPU throttles nano
+25 → 75–103 ms at `thermalState=serious`, and the ANE does the same work at a
+fraction of the power.
+
 ## The port in one lesson: deformable attention vs the Core AI stack
 
 `grid_sample` has no Core AI lowering, but rfdetr 1.7.1 already ships a

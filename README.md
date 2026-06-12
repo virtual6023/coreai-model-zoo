@@ -20,6 +20,7 @@ on-device, with the conversion code and a knowledge base. Successor to
 | **Qwen3-VL** (vision-language) | [🤗 2B](https://huggingface.co/mlboydaisuke/Qwen3-VL-2B-CoreAI) · [4B](https://huggingface.co/mlboydaisuke/Qwen3-VL-4B-CoreAI) · [8B](https://huggingface.co/mlboydaisuke/Qwen3-VL-8B-CoreAI) | Apache-2.0 |
 | **Gemma 4 E2B vision (VL)** (image+text) | `vl/` in [🤗 gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI) | Gemma |
 | **RF-DETR nano/small/medium/large** (object detection, no NMS) | [🤗 RF-DETR-CoreAI](https://huggingface.co/mlboydaisuke/RF-DETR-CoreAI) | Apache-2.0 |
+| **RF-DETR-Seg nano→2xlarge** (instance segmentation, 6 sizes) | [🤗 RF-DETR-CoreAI](https://huggingface.co/mlboydaisuke/RF-DETR-CoreAI) | Apache-2.0 |
 
 ### Decode throughput (tok/s, greedy; output top-1 exact vs the Hugging Face reference)
 
@@ -46,7 +47,8 @@ kernels (ANE column excepted). Prefill, sizes, per-model caveats: [`zoo/`](zoo/)
 - **GLM-4.7-Flash** (MoE + MLA, 30B/~3B active) — the zoo's first Multi-head Latent Attention
   model; full-MLA attention on all 47 layers (absorbed-MLA is the speed follow-up);
   [`zoo/glm-4.7-flash.md`](zoo/glm-4.7-flash.md)
-- **RF-DETR** — 33–39 FPS live on iPhone 17 Pro, 8.6–19.1 ms/frame on M4 Max;
+- **RF-DETR / RF-DETR-Seg** — detection 33–39 FPS live on iPhone 17 Pro; instance
+  segmentation in 6 sizes, masks gated IoU 1.000, 10.7–59.1 ms/frame on M4 Max;
   [`zoo/rf-detr.md`](zoo/rf-detr.md)
 - **Gemma 4 E2B VL** — same text decoder + a 3-line image splice;
   [`zoo/gemma4-vl.md`](zoo/gemma4-vl.md)

@@ -79,6 +79,33 @@ Live-camera reference app: **DetectCamera** in
 `CameraFeed` + `ObjectDetector`, box overlay, in-app Hub download; the whole ML
 surface is two calls).
 
+## RF-DETR-Seg (instance segmentation)
+
+The segmentation family converts with the same recipe — the seg head
+(bilinear-resize → depthwise-conv blocks → query·feature einsum) needed zero
+extra workarounds. Third output `masks [1, Q, R/4, R/4]`: per-query FULL-FRAME
+logit planes at stride 4; host does sigmoid > 0.5 (no per-box ROI plumbing).
+
+| variant | input | queries | M4 Max GPU | `.aimodel` |
+|---|---|---|---|---|
+| seg-nano | 312² | 100 | **10.7 ms** | 123 MB |
+| seg-small | 384² | 100 | **12.4 ms** | 123 MB |
+| seg-medium | 432² | 200 | **18.3 ms** | 130 MB |
+| seg-large | 504² | 200 | **22.5 ms** | 131 MB |
+| seg-xlarge | 624² | 300 | **38.5 ms** | 139 MB |
+| seg-2xlarge | 768² | 300 | **59.1 ms** | 141 MB |
+
+All six gate on CPU and GPU: box set-match + **binary-mask IoU = 1.000** on
+stable scenes. Gate-design finding: on busy scenes the deepest models flip 1–2
+near-tie proposals between any two numerically-different executions — the
+PyTorch reference itself flips **10 confident queries under 1e-4 input noise**
+on the same image (measured, seg-xlarge / COCO 397133) — so the gate matches
+identity by class + IoU + score ± 0.05 with a ≤ 2-flip budget, and compares
+masks only for queries confident on both sides. The detection analog of the
+LLM argmax margin rule, now needed on real images, not just noise probes.
+
+<p align="center"><img src="https://huggingface.co/mlboydaisuke/RF-DETR-CoreAI/resolve/main/demo_seg_coco_cats.jpg" width="420" alt="RF-DETR-Seg nano on Core AI"></p>
+
 ## Split deployment & the ANE question (measured)
 
 `export_rf_detr.py --split` emits `rfdetr-<v>_backbone.aimodel` (pure ViT) +

@@ -338,6 +338,50 @@ gates in torch but crashes the engine at generate on the macOS-27 beta
 future lever; the python runtime cannot execute dynamic-shaped-output graphs
 at all (gate via a static-S=1 twin bundle).
 
+### Second rider: Gemma 4 E2B VL (and what it added to the recipe)
+
+Gemma 4 E2B vision (zoo/gemma4-vl.md, 82.4 tok/s M4 Max / 25.5 iPhone) reuses
+the id-space trick on an ALREADY-SHIPPED text decoder — same checkpoint, same
+PLE tables — and is simpler than Qwen3-VL (no M-RoPE, no DeepStack, standard
+positions). New, generalizable findings:
+
+- **Check the mask config before assuming bidirectional images.** Gemma 3
+  attends bidirectionally within an image; Gemma 4 gates it on
+  `use_bidirectional_attention` — `None` on E2B/E4B (conventional causal,
+  engine-compatible as-is), `"vision"` only on 26b/31b. Verify with a
+  runtime mask dump, not just the config (`create_masks_for_generate` has
+  per-size branches).
+- **Models with per-token side tables (PLE) splice cleanly**: HF computes
+  the per-layer rows for the PAD id at image positions, so the in-graph
+  gather just indexes `where(ids ≥ V, pad, ids)` — side tables stay
+  byte-identical to the text ship; the per-layer projection branch reads
+  the spliced embedding (matching HF exactly).
+- **Gate quantized bundles at REAL context lengths.** QAT-q4_0 weights are
+  trained for the per-block-32 absmax grid; `symmetric_with_clipping`
+  mismatches it and the error COMPOUNDS — invisible at a 19+8-token gate,
+  but at 272 tokens it flips argmaxes whose fp32-oracle top-2 margin is
+  1.0+ and drags prompt-end logits cos to 0.75. Ship `--lin-sym` for QAT
+  checkpoints, and adopt the **margin rule**: a flip where the oracle's
+  top-2 gap is < 0.1 is a knife-edge tie (fp16 class), not a failure.
+- **iOS per-encode scratch-heap ceiling (engine bug, 2 reproducers).**
+  MPSGraph plans a ~208 KB per-encode temporary heap; one allocation past
+  it aborts the first encode (`allocateMTLBufferFromMTLHeap … exceeds heap
+  total 212992` + `Failed to acquire the source buffer for the ViewOp`).
+  Triggers: 16-head×512 full-attention (12B dense, any bundle) and the
+  gemma4 tbl in-graph table-gather + VL splice. Model-side graph squeezing
+  is blind — a 36 KB-smaller dequant chain crashed at the byte-identical
+  offset (the savings land in a different heap region). macOS is
+  unaffected. Escape: move the offending gather OFF-graph — the VL device
+  ship is provider mode (`PerTokenInputProvider` PLE rows, extension ids
+  mapped to the pad row host-side) with `image_embeds` still a static
+  buffer: **static and per-token extra inputs compose in one engine**.
+- Device-vs-Mac exactness has a context-length limit: at 272 tokens the
+  AOT-h18p fusion lands elsewhere within the runtime's own fp16 noise
+  (Mac prompt-end logits cos dips to ~0.9), so a 24-token greedy chain can
+  fork at a real-margin synonym deterministically. Gate the prefix + the
+  margin rule + a decoded-rollout sanity check instead of demanding
+  bit-equal chains.
+
 ## What fits next / what doesn't
 
 - **Fits with zero engine work**: pure transformers ≤~4B (KV-only states) — stock engine, no

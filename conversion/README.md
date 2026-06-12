@@ -101,6 +101,17 @@ overlay** of that package. Concretely, the additions are:
   raw `AIModel.load(gpu)` aborts on the MoE→ANE path (`ANE compilation writeToFile failed!`
   / 100 GB temp blowup); the real engine's `expectFrequentReshapes` avoids it — run via
   `llm-benchmark`/`llm-runner`, not raw load.** See [`../zoo/qwen3.6.md`](../zoo/qwen3.6.md).
+- **Qwen3.6-27B (dense) pipelined — reuse the qwen3.5 script: `export_qwen3_5_decode_pipelined.py int8hu --head-sym --hf-id Qwen/Qwen3.6-27B`** —
+  the **dense** Mac-class companion to the 35B-A3B: the *same* Qwen3.5 hybrid decoder (3:1
+  GatedDeltaNet + gated full attention, head_dim 256) run **without MoE**, 64 layers, GVA
+  GatedDeltaNet at **48 value / 16 key heads** (ratio 3 — the head-repeat is config-driven, no
+  new code) and an untied 248320-vocab head (the loader picks it up from the checkpoint root).
+  `int8hu --head-sym` = **28 GB bundle, 15.9 tok/s decode on M4 Max** (~87 % of the bandwidth
+  ceiling — a *dense* 27B reads the whole model per token, unlike the 35B-A3B's ~3B active).
+  int8 == full precision at every confident position (teacher-forced vs bf16 oracle; the lone
+  confident oracle disagreement is an fp16-identical bf16 artifact). Mac-only (28 GB > iPhone
+  jetsam). No MoE files — reuses `models/macos/qwen3_5.py` directly. See
+  [`../zoo/qwen3.6-27b.md`](../zoo/qwen3.6-27b.md).
 
 - **RF-DETR (object detection, in this dir): `export_rf_detr.py --variant {nano|small|medium|large}`** —
   the zoo's first detector ([apple/coreai-models#14](https://github.com/apple/coreai-models/issues/14)):

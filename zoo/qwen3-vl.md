@@ -1,22 +1,40 @@
-# Qwen3-VL 2B (vision-language) — Core AI
+# Qwen3-VL (2B / 4B / 8B, vision-language) — Core AI
 
-**The zoo's first VLM on Core AI**: image + text → text, end-to-end on the
-GPU via the [pipelined-engine fast path](../knowledge/pipelined-engine.md) —
+**The zoo's first VLM family on Core AI**: image + text → text, end-to-end on
+the GPU via the [pipelined-engine fast path](../knowledge/pipelined-engine.md) —
 no engine changes beyond the published static-inputs patch.
 
-Architecture (`Qwen/Qwen3-VL-2B-Instruct`): a **pure-attention Qwen3 text
-decoder** (28 layers, hidden 2048, 16 q / 8 kv heads, head_dim 128, vocab
-151 936 tied head, SwiGLU 6144, rope θ 5e6) + a **24-layer ViT vision tower**
-(hidden 1024, patch 16, temporal-2 duplicated frame, 2×2 spatial merge →
-out 2048) with **DeepStack**: merger outputs at vision layers 5/11/17 are
-added to the decoder hidden state at image positions after decoder layers
-0/1/2. Positions are **interleaved M-RoPE** — 3D (t,h,w), section [24,20,20].
+Architecture (`Qwen/Qwen3-VL-{2B,4B,8B}-Instruct`): a **pure-attention Qwen3
+text decoder** (vocab 151 936, head_dim 128, 8 kv heads, SwiGLU, rope θ 5e6) +
+a **ViT vision tower** (patch 16, temporal-2 duplicated frame, 2×2 spatial
+merge → decoder hidden) with **DeepStack** (three merger outputs added to the
+decoder hidden state at image positions after decoder layers 0/1/2). Positions
+are **interleaved M-RoPE** — 3D (t,h,w), section [24,20,20].
+
+The 4B and 8B drop in on the **same recipe** — the model overlay and exporter
+are fully config-driven, so the only deltas are configuration:
+
+| size | decoder | head | ViT (depth · hidden · deepstack) |
+|---|---|---|---|
+| **2B** | 28 L · h2048 · 16 q-heads · SwiGLU 6144 | tied fp16 | 24 · 1024 · [5,11,17] |
+| **4B** | 36 L · h2560 · 32 q-heads · SwiGLU 9728 | tied fp16 | 24 · 1024 · [5,11,17] |
+| **8B** | 36 L · h4096 · 32 q-heads · SwiGLU 12288 | **untied** | **27 · 1152** · [8,16,24] |
+
+4B reuses the 2B path verbatim. 8B needed exactly one loader change — its head
+is **untied** (a separate `lm_head.weight`), so the checkpoint remap routes
+that tensor to the top-level module instead of under `model.`; its larger ViT
+(depth 27, head_dim 72) is otherwise absorbed by config.
 
 **⬇️ Converted `.aimodel` bundles:
 [mlboydaisuke/Qwen3-VL-2B-CoreAI](https://huggingface.co/mlboydaisuke/Qwen3-VL-2B-CoreAI)** —
 `gpu-pipelined/qwen3_vl_2b_instruct_decode_int8hu_s1/` (text decoder
 LanguageBundle, ship config) + `gpu-pipelined/qwen3_vl_2b_instruct_vision/`
-(fixed-grid vision encoder, fp16). Apache-2.0.
+(fixed-grid vision encoder, fp16). Apache-2.0. The **4B**
+([🤗 Qwen3-VL-4B-CoreAI](https://huggingface.co/mlboydaisuke/Qwen3-VL-4B-CoreAI))
+and **8B**
+([🤗 Qwen3-VL-8B-CoreAI](https://huggingface.co/mlboydaisuke/Qwen3-VL-8B-CoreAI))
+bundles convert from the same recipe (`--hf-id Qwen/Qwen3-VL-4B-Instruct` /
+`8B-Instruct`) and ship the same int8hu config.
 
 <p align="center"><img src="https://huggingface.co/mlboydaisuke/Qwen3-VL-2B-CoreAI/resolve/main/demo.gif" width="300" alt="CoreAIChat Qwen3-VL demo on iPhone 17 Pro"></p>
 
@@ -51,13 +69,33 @@ fixed grid: `patches [784,1536] → (image_embeds, deepstack_embeds)`.
 
 ## Measured (macOS 27 beta / iOS 27 beta, release, p=128 g=256, `COREAI_CHUNK_THRESHOLD=1`)
 
-| config | bundle | platform | prefill tok/s | decode tok/s | numerics |
-|---|---:|---|---:|---:|---|
-| **int8hu (ship): int8lin body + untied absmax int8 head** | 2.3 GB | M4 Max | **191.0** | **187.6** | A 211-tok multimodal sweep 4/4 + B decode 16/16 + D HF-seeded (cos 0.99995) vs fp32-HF; engine ≡ python 24/24 |
-| int8lin (per-block-32 body, tied fp16 head) | 2.0 GB | M4 Max | 165.7 | 162.9 | same gate set PASS (D cos 0.99996) |
-| **int8hu, iPhone 17 Pro** (settled, screen unlocked) | 2.3 GB | iPhone | **33.5–34.6** | **33.3 typical (32.9–33.8; one thermal-dip trial 27.5)** | **nat 24/24 + multimodal oracle 24/24 × 8 runs — token-identical to M4 Max. ~92% of the naive BW ceiling (~36 = 60 GB/s ÷ 1.66 GB/tok)** |
-| vision encoder fp16 | 0.77 GB | both | — | 59–79 ms/image (Mac) | cos 0.9997 embeds / 0.99998 deepstack vs fp32-HF |
+All three ship the **int8hu** config (int8lin per-block-32 body + untied absmax
+int8 head, the `_s1` static-query bundle; the dynamic twin crashes the engine —
+see below). Decode is bandwidth-bound, so tok/s scales ~inversely with bundle
+size across the family.
 
+| size · config | bundle | platform | prefill tok/s | decode tok/s | numerics |
+|---|---:|---|---:|---:|---|
+| **2B int8hu** | 2.3 GB | M4 Max | **191.0** | **187.6** | A 211-tok multimodal sweep 4/4 + B decode 16/16 + D HF-seeded (cos 0.99995) vs fp32-HF; engine ≡ python 24/24 |
+| **2B int8hu**, iPhone 17 Pro (settled, unlocked) | 2.3 GB | iPhone | **33.5–34.6** | **33.3 typical (32.9–33.8; one thermal-dip 27.5)** | **nat 24/24 + multimodal oracle 24/24 × 8 runs — token-identical to M4 Max. ~92% of the naive BW ceiling** |
+| **4B int8hu** | 4.7 GB | M4 Max | **93.3** | **92.2** | torch ladder ALL PASS vs fp32-HF (positions exact, vision cos 1.000, 36/36 layers cos 1.000, prefill top-1, decode 16/16); **engine ≡ python 24/24** (211-tok multimodal prompt) |
+| **4B int8hu**, iPhone 17 Pro | 4.7 GB | iPhone | 10–15 | **14.0 cool → ~8.5 sustained** | **nat 24/24 + multimodal oracle 24/24 × 3 device runs** (token-identical to M4 Max). Thermally limited: the 4.7 GB/tok read peaks ~14 from a cool start, throttles to ~8.5 under sustained decode (cold spec 52.7 s, warm load 8–9 s) |
+| **8B int8hu** (Mac-only) | 8.7 GB | M4 Max | **54.4** | **54.3** | torch ladder ALL PASS vs fp32-HF incl. untied head + depth-27 ViT (vision cos 1.0001, 36/36 layers cos 1.000, decode 16/16); **engine ≡ python 24/24** (211-tok multimodal prompt) |
+| 2B int8lin (tied fp16 head) | 2.0 GB | M4 Max | 165.7 | 162.9 | same gate set PASS (D cos 0.99996) |
+| vision encoder fp16 | 0.77 / 0.79 / 1.1 GB | both | — | 59–79 ms/image (Mac, 2B) | cos ≥ 0.9997 embeds / deepstack vs fp32-HF, all sizes |
+
+- **8B is Mac-only**: its 8.7 GB decoder exceeds the iPhone increased-memory
+  jetsam ceiling (~6.4 GB class). **4B (4.7 GB) runs on iPhone 17 Pro** — numerics
+  24/24 every run, but decode is **thermally limited**: ~14 tok/s from a cool
+  start, settling to ~8.5 under sustained load (2B at 2.3 GB holds 33 steady; the
+  4B's 2× per-token read both halves the ceiling and heats faster). Needs the
+  increased-memory entitlement for the 4.7 GB cold spec.
+- 4B/8B are gated end-to-end like 2B: fp32-torch ladder (architecture EXACT) →
+  **engine ≡ python 24/24** on the real 211-token house-scene prompt (the
+  int8hu-through-runtime check — the engine reproduces the `_s1` bundle's greedy
+  tokens token-for-token; both produce a correct house caption). The int8hu
+  quantization spec is byte-identical to the 2B recipe and the head rule is
+  **vocab-dependent, not size-dependent** (all three share vocab 151 936).
 - The big-vocab head rule ([compression-reference](../knowledge/compression-reference.md))
   holds at vocab 151 936: absmax `symmetric` int8 head gates clean, +15% on Mac
   over int8lin.
@@ -80,11 +118,17 @@ fixed grid: `patches [784,1536] → (image_embeds, deepstack_embeds)`.
 ## Convert / verify
 
 ```
-# decoder (fp16 / int8lin / int8hu) + _s1 gate twin + vision encoder
-python conversion/export_qwen3_vl_pipelined.py int8hu
-# gates (vision + decoder A/B/D vs the fp32 oracle)
-python _smoke/test_qwen3vl_aimodel_gate.py qwen3_vl_2b_instruct_decode_int8hu_s1 \
-    --vision qwen3_vl_2b_instruct_vision
+# decoder (fp16 / int8lin / int8hu) + _s1 gate twin + vision encoder.
+# --hf-id selects the size; the recipe is identical across 2B / 4B / 8B.
+python conversion/export_qwen3_vl_pipelined.py int8hu                       # 2B (default)
+python conversion/export_qwen3_vl_pipelined.py int8hu --hf-id Qwen/Qwen3-VL-4B-Instruct
+python conversion/export_qwen3_vl_pipelined.py int8hu --hf-id Qwen/Qwen3-VL-8B-Instruct
+# fp32-HF torch ladder (position formula, vision cos, per-layer cos, decode top-1).
+# Capture the oracle with the matching size, then run the ladder:
+QWEN3VL_MID=Qwen/Qwen3-VL-4B-Instruct QWEN3VL_REF=_smoke/qwen3_vl_4b_ref.pt \
+    python _smoke/qwen3vl_capture_ref.py            # py312 venv (transformers w/ qwen3_vl)
+QWEN3VL_MID=Qwen/Qwen3-VL-4B-Instruct QWEN3VL_REF=_smoke/qwen3_vl_4b_ref.pt \
+    python _smoke/test_qwen3vl_torch_ladder.py      # coreai-models venv
 ```
 
 The torch re-authoring lives in

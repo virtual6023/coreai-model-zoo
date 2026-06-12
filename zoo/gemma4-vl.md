@@ -32,13 +32,14 @@ resizes to 768×768 = 48×48 patches = **256 tokens**; the 280 budget needs
 
 **⬇️ Converted `.aimodel` bundles:
 [mlboydaisuke/gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI)** —
-`vl/gemma4_e2b_qat_vl_decode_int4linsym_tbl/` (Mac decoder),
-`vl/gemma4_e2b_qat_vl_decode_int4linsym{,_aotc}/` (iPhone decoder, provider
-mode + the h18p AOT) and `vl/gemma4_e2b_qat_vl_vision/` (fixed-grid vision
-encoder, fp16, 296 MB). Pair them with the QAT PLE tables already on the repo
-(`gemma4_qat_gather_raw`) — bundle + tables + vision are a checkpoint-derived
-triple (the QAT run retrains `embed_vision`, so the vision encoder must also
-come from the QAT checkpoint).
+`gpu-pipelined/gemma4_e2b_qat_vl_decode_int4linsym_tbl/` (Mac decoder),
+`gpu-pipelined/gemma4_e2b_qat_vl_decode_int4linsym{,_aotc_h18p}/` (iPhone
+decoder, provider mode + the h18p AOT) and
+`gpu-pipelined/gemma4_e2b_qat_vl_vision/` (fixed-grid vision encoder, fp16,
+296 MB). Pair them with the QAT PLE tables already on the repo
+(`ios-frontend/gemma4_qat_gather_raw`) — bundle + tables + vision are a
+checkpoint-derived triple (the QAT run retrains `embed_vision`, so the vision
+encoder must also come from the QAT checkpoint).
 
 ## How the splice works (3 lines on top of the text graph)
 

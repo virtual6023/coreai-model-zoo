@@ -50,6 +50,10 @@ Vision: **RF-DETR** detection runs **33–39 FPS (nano) / 15–17 FPS (medium) l
 Pro** (zero-copy capture pipeline) and 8.6–19.1 ms/frame on the M4 Max GPU, fp32, detections
 set-exact vs the PyTorch reference, no NMS — [`zoo/rf-detr.md`](zoo/rf-detr.md).
 
+Vision-language: **Gemma 4 E2B VL** rides the SAME text decoder + PLE tables with a 3-line
+image splice — the image span is causal on E2B, so the engine needs nothing new
+([`zoo/gemma4-vl.md`](zoo/gemma4-vl.md)).
+
 <p align="center">
   <img width="380" alt="CoreAIChat screen recording" src="https://github.com/user-attachments/assets/999dbd95-45b5-468f-b1a8-34112ee3b74d" />
 </p>

@@ -9,7 +9,7 @@ The re-authored decoders use `coreai_models` primitives (KVCache, RMSNorm, RoPE,
 **not** register these newer models, so the model authoring + export wiring lives in **our fork /
 overlay** of that package. Concretely, the additions are:
 
-- `models/macos/qwen3_5.py`, `models/macos/gemma4_text.py` — re-authored decoders (+ config shims).
+- `models/macos/qwen3_5.py`, `models/macos/qwen3_5_moe.py`, `models/macos/gemma4_text.py` — re-authored decoders (+ config shims).
 - `models/registry.py` entries (`qwen3_5_text`, `gemma4_text`) + `model_registry.py` short-name
   presets + `export/{presets,metadata,macos,pipeline}.py` hooks (e.g. `export_core()` routing,
   macOS int8 palettization, multi-function front-end gather).
@@ -78,6 +78,18 @@ overlay** of that package. Concretely, the additions are:
   `[1] i32` shift inputs. int8hu **187.6 tok/s decode** on M4 Max, multimodal oracle
   gates 4/4+16/16+HF-seeded vs fp32-HF; iPhone numerics 24/24 (text AND image prompts).
   Model overlay: `models/macos/qwen3_vl.py`. See [`../zoo/qwen3-vl.md`](../zoo/qwen3-vl.md).
+- **Qwen3.6-35B-A3B pipelined — the first MoE (in this dir): `export_qwen3_6_decode_pipelined.py [int8lin|int8hu]`** —
+  Qwen3.5's hybrid decoder + a 256-expert top-8 sparse-MoE FFN (+ shared expert), 40 layers,
+  GVA GatedDeltaNet (32 value / 16 key heads). Experts ride Apple's `SwitchGLU`/`GatherMM`;
+  the 4-D expert weights quantize with the documented SwitchLinear override
+  (`block_size [1,1,1,32]`), router + shared-expert gate stay fp16, head is absmax int8.
+  `int8hu --head-sym` = 35 GB bundle, **30.9 tok/s decode on M4 Max** (35B-A3B, ~3B active);
+  fp16 full-scale eager ≡ bf16 HF oracle (margin rule), int8 eager teacher-forced gate.
+  Mac-only (35 GB > iPhone jetsam). Model overlay: `models/macos/qwen3_5_moe.py` (MoE FFN +
+  packed-expert loader) on top of `qwen3_5.py` (which gained the GVA head-repeat). **NOTE:
+  raw `AIModel.load(gpu)` aborts on the MoE→ANE path (`ANE compilation writeToFile failed!`
+  / 100 GB temp blowup); the real engine's `expectFrequentReshapes` avoids it — run via
+  `llm-benchmark`/`llm-runner`, not raw load.** See [`../zoo/qwen3.6.md`](../zoo/qwen3.6.md).
 
 ## Reproduce (env)
 

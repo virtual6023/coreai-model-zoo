@@ -34,16 +34,19 @@ query×class plane, gather boxes — done. No anchors, no NMS, no letterboxing
 
 ## Measured (macOS 27 / iOS 27 beta, GPU, median)
 
-| variant | M4 Max | M4 Max CPU | iPhone 17 Pro | iPhone FPS |
+| variant | M4 Max | M4 Max CPU | iPhone 17 Pro | iPhone end-to-end FPS |
 |---|---|---|---|---|
-| nano | **8.6 ms** (~116 FPS) | 27.1 ms | **27.5 ms** | **~36** |
+| nano | **8.6 ms** (~116 FPS) | 27.1 ms | **~25 ms** | **33–39** |
 | small | **12.0 ms** (~83 FPS) | 44.9 ms | — | — |
-| medium | **14.8 ms** (~68 FPS) | 56.5 ms | **56 ms** | **~17** |
+| medium | **14.8 ms** (~68 FPS) | 56.5 ms | **56–63 ms** | **15–17** |
 | large | **19.1 ms** (~52 FPS) | 86.1 ms | — | — |
 
-iPhone numbers are live-camera medians from the DetectCamera example app
-(Release build, sustained over ~30 s; one-time on-device specialization ~5 s on
-first load). The on-device gate reproduces the Mac fp32 oracle detections with
+iPhone numbers are live-camera measurements from the DetectCamera example app
+(Release, zero-copy capture pipeline: AVCaptureVideoPreviewLayer display +
+hardware-scaled 32BGRA data buffers + vImage preprocessing overlapped with GPU
+inference; 60 fps capture). Peak measured 39.6 FPS ≈ the nano model ceiling.
+Sustained max-load throughput drops on a hot chassis (thermal); one-time
+on-device specialization ~5 s on first load. The on-device gate reproduces the Mac fp32 oracle detections with
 boxes within 1e-3 normalized and scores within 0.01 (medium) / 0.04 (nano) —
 the documented GPU h16c noise class. `neural_engine` preference loads and
 gates clean but measures ≈ GPU — the gather-heavy deformable decoder keeps the

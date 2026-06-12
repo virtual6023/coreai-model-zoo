@@ -17,6 +17,7 @@ on-device, with the conversion code and a knowledge base. Successor to
 | **Granite 4.0-H 1B / 350M** | [🤗 granite-4.0-h-CoreAI](https://huggingface.co/mlboydaisuke/granite-4.0-h-CoreAI) | Apache-2.0 |
 | **Qwen3-VL** (vision-language) | [🤗 2B](https://huggingface.co/mlboydaisuke/Qwen3-VL-2B-CoreAI) · [4B](https://huggingface.co/mlboydaisuke/Qwen3-VL-4B-CoreAI) · [8B](https://huggingface.co/mlboydaisuke/Qwen3-VL-8B-CoreAI) | Apache-2.0 |
 | **Gemma 4 E2B vision (VL)** (image+text) | `vl/` in [🤗 gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI) | Gemma |
+| **RF-DETR nano/small/medium/large** (object detection, no NMS — [#14](https://github.com/apple/coreai-models/issues/14)) | [🤗 RF-DETR-CoreAI](https://huggingface.co/mlboydaisuke/RF-DETR-CoreAI) | Apache-2.0 |
 
 ### Decode throughput (tok/s, greedy; output top-1 exact vs the Hugging Face reference)
 
@@ -45,9 +46,9 @@ MoE path uses the same op; not a porting defect) and int4 doesn't pass this mode
 The number is expected to rise as the Core AI MoE path matures; the dense ports are the
 "fast on Mac today" picks. Mac-only at 35 GB — [`zoo/qwen3.6.md`](zoo/qwen3.6.md).
 
-Vision-language: **Gemma 4 E2B VL** rides the SAME text decoder + PLE tables with a 3-line
-image splice — the image span is causal on E2B, so the engine needs nothing new
-([`zoo/gemma4-vl.md`](zoo/gemma4-vl.md)).
+Vision: **RF-DETR** detection runs **33–39 FPS (nano) / 15–17 FPS (medium) live on iPhone 17
+Pro** (zero-copy capture pipeline) and 8.6–19.1 ms/frame on the M4 Max GPU, fp32, detections
+set-exact vs the PyTorch reference, no NMS — [`zoo/rf-detr.md`](zoo/rf-detr.md).
 
 <p align="center">
   <img width="380" alt="CoreAIChat screen recording" src="https://github.com/user-attachments/assets/999dbd95-45b5-468f-b1a8-34112ee3b74d" />

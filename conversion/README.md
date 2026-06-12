@@ -78,6 +78,17 @@ overlay** of that package. Concretely, the additions are:
   `[1] i32` shift inputs. int8hu **187.6 tok/s decode** on M4 Max, multimodal oracle
   gates 4/4+16/16+HF-seeded vs fp32-HF; iPhone numerics 24/24 (text AND image prompts).
   Model overlay: `models/macos/qwen3_vl.py`. See [`../zoo/qwen3-vl.md`](../zoo/qwen3-vl.md).
+- **Gemma 4 E2B VISION pipelined — the second VLM (in this dir): `export_gemma4_vl_pipelined.py [fp16|int8lin|int4lin] [--lin-sym] [--tbl]`** —
+  the Qwen3-VL rider recipe on the shipped gemma4 decoder: a fixed-grid SigLIP-class vision
+  tower (48×48 patches = 768×768 square → 256 soft tokens, checkpoint-calibrated activation
+  clamps) + ONE new `image_embeds [280,1536]` static input. Image span is CAUSAL on E2B
+  (verified vs the fp32 mask dump); PLE rows for image steps gather the PAD row, so the PLE
+  tables stay byte-identical to the text ship. Ship = `int4lin --lin-sym` (QAT q4_0 = absmax
+  grid — clipping flips real-margin argmaxes at a 272-token horizon): Mac `--tbl` **95.2
+  prefill / 82.4 decode tok/s**; iPhone provider mode **41.2 / 25.5** (the tbl gather overflows
+  the iOS ~208 KB per-encode MPSGraph scratch heap — an engine bug, second reproducer).
+  Model overlay: `models/macos/gemma4_vision.py` + the `Gemma4VLPipelined*` subclasses in
+  `models/macos/gemma4_pipelined.py`. See [`../zoo/gemma4-vl.md`](../zoo/gemma4-vl.md).
 - **Qwen3.6-35B-A3B pipelined — the first MoE (in this dir): `export_qwen3_6_decode_pipelined.py [int8lin|int8hu]`** —
   Qwen3.5's hybrid decoder + a 256-expert top-8 sparse-MoE FFN (+ shared expert), 40 layers,
   GVA GatedDeltaNet (32 value / 16 key heads). Experts ride Apple's `SwitchGLU`/`GatherMM`;

@@ -60,6 +60,34 @@ oracle-margin≥0.1 rule):
 - Mac-only: at 35 GB int8 the bundle is far past the iPhone jetsam limit. This is the
   64/128 GB-Mac flagship; a smaller MoE (LFM2-8B-A1B class) is the iPhone-MoE story.
 
+## Speed: an honest accounting (and why it will improve)
+
+30.9 tok/s is real and usable, but it is **~4× slower than MLX 4-bit on the same M4 Max**
+(`mlx-community/Qwen3.6-35B-A3B-4bit`: 125 tok/s, measured). We ship this honestly with
+the gap fully characterized:
+
+- The 4× decomposes into **~2× (int8 vs 4-bit bytes)** and **~2× (the MoE expert-gather)**.
+- **int4 does not survive this model's numerics.** The attention/GatedDeltaNet body can't
+  take 4-bit: full int4 teacher-forced gates **9/16 (symmetric) / 10/16 (asymmetric)** vs
+  int8's 14/16 — asymmetric's usual +3-5 dB doesn't transfer to this LLM's mixer. Only a
+  mixed recipe (experts int4, body int8) reaches a borderline 12/16. So the easy "4-bit 2×"
+  is not free here, unlike Apple's QAT-int4 Gemma models.
+- The other ~2× is structural: Apple's `GatherMM` composite **gathers then runs a DENSE
+  matmul** with no active-experts-only read — it over-reads the 256-expert tensor, sitting
+  at ~25 % of the memory-bandwidth ceiling, whereas MLX's custom-Metal `gather_qmm` reads
+  only the 8 routed experts (~50 %). Apple's own MoE models use the same `GatherMM`, so
+  this is not a porting mistake — it's the maturity of the Core AI GPU MoE path.
+- **Core AI is not generally slow:** on a *dense* model the same pipelined engine is ~2×
+  MLX (qwen3-0.6b-4bit: 1,150 tok/s). The gap is specific to the MoE expert-gather.
+
+The real fix is a custom Metal gather-matmul kernel (Core AI exposes `TorchMetalKernel` →
+`coreai.metal4_kernel`), but that API is beta-experimental and the integration with the
+pipelined decode path is unverified — a high-variance multi-day spike we are **deliberately
+deferring until the Core AI MoE path / kernel API matures**. So this card ships at frontier
+*quality* with honest decode *speed*, and we expect the number to rise on OS/runtime
+updates without any change to the bundle. For a "fast on Mac today" model, the dense Gemma /
+Qwen ports are the better fit; this is the frontier-capability slot.
+
 ## A Core AI GPU bug this port surfaced (worked around at the engine surface)
 
 A MoE decode graph raw-loaded via `AIModel.load(from_preferred_compute_unit_kind(.gpu))`

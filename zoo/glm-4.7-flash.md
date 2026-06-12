@@ -1,0 +1,121 @@
+# GLM-4.7-Flash (text decoder) — Core AI
+
+The **first model on the zoo with Multi-head Latent Attention (MLA)** — the
+DeepSeek-V3 attention family Core AI had no port of — and a strong **local-coding**
+model for 64/128 GB Macs. Source: `zai-org/GLM-4.7-Flash` (MIT, `model_type
+glm4_moe_lite`).
+
+Architecturally this is **MLA attention on all 47 layers + a sparse
+Mixture-of-Experts FFN** (DeepSeek-V3 style):
+
+- **MLA** (heads 20, `q_lora_rank` 768, `kv_lora_rank` 512, `qk_nope` 192 +
+  decoupled `qk_rope` 64 = head_dim 256, `v_head_dim` 256, RoPE θ=1e6,
+  **interleaved**). Authored in the **naive / materialized** form: the latent
+  caches are projected up to per-head q/k/v, decoupled RoPE is applied to the
+  64-dim rope slice, and the full per-head `[20, 256]` Q/K/V run through Apple's
+  standard `SDPA` composite (scale `256**-0.5`). The KV cache stores the
+  materialized per-head K/V (full-MHA size). *The absorbed-MLA form that keeps
+  only the `[512]` latent in cache is a follow-up.*
+- **MoE FFN** (layers 1–46; layer 0 is a dense `MLP(10240)`,
+  `first_k_dense_replace=1`): 64 routed experts, top-4, plus **one non-gated
+  shared expert**. Routing is `noaux_tc` which — at `n_group == topk_group == 1`
+  — reduces exactly to **sigmoid scoring + selection-only bias correction**: the
+  top-4 indices come from `sigmoid(logits) + e_score_correction_bias`, the
+  gathered weights come from the **raw sigmoid**, then `norm_topk_prob` (÷sum)
+  × `routed_scaling_factor` (1.8). Experts ride Apple's `SwitchGLU` / `GatherMM`
+  composite (the data-dependent expert gather), the shared `MLP(1536)` is added
+  directly (no sigmoid gate, unlike Qwen3.5-MoE).
+
+**~30B parameters, ~3B active per token** → a strong local-coder that decodes at
+**Mac-class speed** because only 4 of 64 experts fire per token.
+
+**⬇️ Converted `.aimodel` bundle:** `glm_4_7_flash_decode_int8hu_block32_sym/`
+(30 GB, full LanguageBundle incl. tokenizer; decode-only loop-free for the
+[pipelined engine](../knowledge/pipelined-engine.md)). *HF upload user-gated.*
+
+## Measured (macOS 27 beta, M4 Max 128 GB, release `llm-benchmark`, `COREAI_CHUNK_THRESHOLD=1`)
+
+| config | bundle | prefill tok/s | decode tok/s | numerics |
+|---|---:|---:|---:|---|
+| **int8 linear per-block-32 + untied absmax int8 head (`int8hu --head-sym`) = SHIP** | **30 GB** | **20.5** | **20.3** | engine ≡ eager-int8 (exact 32-token greedy match); fp16 port ≡ fp32 oracle 16/16 |
+| int8hu @ -p 64 -g 128 (lower context) | 30 GB | 20.5 | 20.5 | — (decode is context-stable; set by per-token weight read, not KV growth) |
+| int8hu, 2-layer control | 1.6 GB | 420 | 502 | — (engine-path smoke / scratch-heap pre-check) |
+
+**~20 tok/s for a 30B-class local coder on a Mac** — comfortably above reading
+speed, and the rate is flat across context (the per-token weight read dominates,
+not the KV cache). It is **slower than the [Qwen3.6-35B-A3B](qwen3.6.md) MoE
+(30.9 tok/s)** despite fewer experts (64 vs 256), for an architectural reason:
+GLM runs **full MLA attention with a materialized full-MHA KV cache on all 47
+layers** (per-token it does the q_a→q_b `768→5120` and kv_a→kv_b `512→8960`
+up-projections and a 20-head × 256-dim SDPA), whereas Qwen3.6 is a 3:1 hybrid
+that runs cheap GatedDeltaNet linear-attention on ¾ of its layers. The
+**absorbed-MLA** form (cache only the `[512]` latent, fold the up-projection into
+Q) is the decode/​KV-memory lever and is the planned follow-up; the naive
+materialized form shipped here trades that speed for a de-risked first MLA port.
+
+## Numerics
+
+The 30B model is ~120 GB in fp32 — too large for an fp32-resident oracle on a
+128 GB host — so the parity ladder gates the **fp16 port vs the fp32 HF oracle**
+(fp16-vs-fp32 rounding lowers cosines by ~1e-3, but a real logic bug collapses
+them to <0.9, so structural errors are still caught). Results on a 16-token probe:
+
+- **RoPE** cos/sin **1.000000** (the interleaved decoupled-RoPE convention,
+  verified bit-exact vs HF — the non-interleaved path differs by attention-score
+  ~25, so the convention is load-bearing).
+- **Isolated MLA block** cosine **1.000000** (maxdiff 1.2e-4) — the naive
+  materialized MLA is correct.
+- **Isolated MoE block** cosine **1.000000** (maxdiff 1.0e-4) — `noaux_tc`
+  routing + non-gated shared expert + `SwitchGLU` experts + the per-expert→
+  SwitchLinear loader are correct.
+- **Full prefill**: all 47 layers ≥0.9995, logits cosine 0.999977, **top-1
+  16/16**; stateful decode (HF-seeded and self-seeded) cosine 1.000000 with
+  matching argmax; teacher-forced S=1 sweep 16/16.
+
+**int8 end-to-end** (raw `AIModel.load` aborts on the MoE→ANE `GatherMM` path —
+see the [Qwen3.6 card](qwen3.6.md) — so the int8 gate drives the REAL engine):
+the **coreai-sequential** engine (GPU, greedy) reproduces the **eager-int8 CPU
+greedy continuation token-for-token** over 32 tokens from the probe prompt —
+`". This process,—known as word embedding—is crucial for tasks like sentiment
+analysis, machine translation, and question answering. However"` — a coherent,
+on-topic continuation. So **engine ≡ python** at int8, and the int8 quantization
+(linear per-block-32 body + absmax int8 head + 4-D SwitchLinear experts) holds
+quality.
+
+## Notes
+
+- The MoE rides Apple's `SwitchGLU`/`GatherMM` exactly like Apple's own
+  `gpt_oss`/`qwen3_moe`, so the **expert int8 quantization uses the documented
+  4-D SwitchLinear override** (`block_size [1,1,1,32]`, `axis: None`); the
+  **router stays fp16** (quantizing it can flip discrete expert selection for
+  ~0.1 % of the bytes). The untied 154 880-vocab head uses the **absmax
+  `symmetric` per-block-32** rule (clipping corrupts big-vocab heads).
+- Prefill ≈ decode because prefill runs as pipelined S=1 steps
+  (`COREAI_CHUNK_THRESHOLD=1`).
+- **Mac-only**: at 30 GB int8 + a full-MHA materialized KV cache (~8 GB at 8 K
+  ctx) the footprint is far past the iPhone jetsam limit. This is the 64/128 GB-Mac
+  local-coder slot.
+- The MoE expert-gather speed caveat is the same as the
+  [Qwen3.6-35B-A3B card](qwen3.6.md): Apple's `GatherMM` over-reads the dense
+  expert tensor, so int8 decode sits well below the per-token-active-bytes ideal;
+  the deferred fix is a custom Metal `gather_qmm` kernel. int4 is not the free 2×
+  it looks (non-QAT int4 flips structural tokens on these LLM mixers); int8 is the
+  ship floor.
+
+## How to reproduce
+
+```bash
+cd coreai-models   # with the glm4_moe_lite model overlay (see ../conversion)
+# convert (CPU-side; ~60 GB fp16 load, mmap quantize keeps RAM in budget; ~30 GB bundle)
+.venv/bin/python ../coreai-models-community/conversion/export_glm47_decode_pipelined.py \
+    int8hu --head-sym
+# bench (pipelined engine + COREAI_CHUNK_THRESHOLD=1)
+COREAI_CHUNK_THRESHOLD=1 .build/release/llm-benchmark \
+    --model exports/glm_4_7_flash_decode_int8hu_block32_sym -p 64 -g 128 -n 3
+```
+
+Model overlay: `models/macos/glm4_moe_lite.py` (MLA naive-materialized attention +
+`noaux_tc` MoE on `SwitchGLU` + the per-expert checkpoint loader). **Decode-only
+loop-free** for the pipelined engine; drive token-by-token with the
+`coreai-sequential` engine variant (the default / `coreai-pipelined` variants feed
+a prefill chunk that the static-`[1,1]` graph can't take).

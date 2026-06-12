@@ -36,6 +36,7 @@ struct ChatView: View {
                 case .lfm2: engine.mode = .lfm2
                 case .granite: engine.mode = .granite
                 case .qwen3vl: engine.mode = .qwen3vl
+                case .gemma4vl: engine.mode = .gemma4vl
                 }
             })
     }
@@ -78,7 +79,7 @@ struct ChatView: View {
         // Mode switch (gemma GPU monolith / ANE chunks / ⚡tbl, or a pipelined model): point the
         // download field at that mode's HF repo (unless GEMMA_REPO pins it) and reload.
         .onChange(of: engine.mode) { _, m in
-            if m != .qwen3vl { photoItem = nil; attachedThumb = nil }
+            if !m.isVL { photoItem = nil; attachedThumb = nil }
             if ProcessInfo.processInfo.environment["GEMMA_REPO"] == nil {
                 repoURL = Gemma4ChatEngine.defaultRepo(for: m)
             }
@@ -168,7 +169,7 @@ struct ChatView: View {
 
     private var inputBar: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            if engine.mode == .qwen3vl {
+            if engine.mode.isVL {
                 PhotosPicker(selection: $photoItem, matching: .images) {
                     if let attachedThumb {
                         Image(uiImage: attachedThumb)
@@ -257,6 +258,7 @@ struct ChatView: View {
                     case .lfm2: "~1.5"
                     case .granite: "~1.2"
                     case .qwen3vl: "~3.1"
+                    case .gemma4vl: "~4.7"
                     }
                     Label("Download \(engine.mode.downloadLabel) set (\(size) GB)",
                           systemImage: "arrow.down.circle")

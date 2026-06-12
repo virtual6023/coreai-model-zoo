@@ -102,6 +102,15 @@ overlay** of that package. Concretely, the additions are:
   / 100 GB temp blowup); the real engine's `expectFrequentReshapes` avoids it — run via
   `llm-benchmark`/`llm-runner`, not raw load.** See [`../zoo/qwen3.6.md`](../zoo/qwen3.6.md).
 
+- **RF-DETR (object detection, in this dir): `export_rf_detr.py --variant {nano|small|medium|large}`** —
+  the zoo's first detector ([apple/coreai-models#14](https://github.com/apple/coreai-models/issues/14)):
+  single static graph, `image [1,3,R,R]` RGB [0,1] → 300 cxcywh boxes + 91 COCO-id logit
+  columns, **no NMS**. fp32 ship (fp16 = +7% speed, near-tie noise). Patches rfdetr 1.7.1 at
+  import: constant-dim_t sine embed (float-arange converter abort), bool-free + floor-safe
+  bilinear (int64-cmp buffer clobber; GPU floor=identity → `div(2x,2,floor)`), `torch._assert`
+  no-op. Set-based detection gate vs torch fp32. `pip install rfdetr==1.7.1`, torch ≤ 2.11.
+  See [`../zoo/rf-detr.md`](../zoo/rf-detr.md).
+
 ## Reproduce (env)
 
 Convert/verify needs the `coreai-core` + `coreai-torch` + `coreai-opt` Python env (macOS; the

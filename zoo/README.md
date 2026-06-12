@@ -12,6 +12,7 @@ throughput.
 | [`gemma4-vl.md`](gemma4-vl.md) | Gemma 4 E2B vision (image+text→text, 2nd VLM) | `vl/` in [🤗 gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI) | margin-ruled exact vs fp32 HF; **82.4 tok/s M4 Max / 25.5 iPhone 17 Pro** (pipelined VLM rider) |
 | [`lfm2.5.md`](lfm2.5.md) | LFM2.5 (conv + full-attn hybrid, LiquidAI) | [🤗 LFM2.5-1.2B-CoreAI](https://huggingface.co/mlboydaisuke/LFM2.5-1.2B-CoreAI) | 1.2B, oracle gate 16/16, **276.5 tok/s M4 Max / 44.1–46.6 iPhone (int8 + absmax int8 head)** (pipelined) |
 | [`granite-4.0-h.md`](granite-4.0-h.md) | Granite 4.0-H (Mamba2 + attn hybrid, IBM) | [🤗 granite-4.0-h-CoreAI](https://huggingface.co/mlboydaisuke/granite-4.0-h-CoreAI) | 1b + 350m, oracle gate 16/16, **136.5 tok/s M4 Max / 35.4–37.1 iPhone 17 Pro (int8 head)** (pipelined, first SSM-scan rider) |
+| [`rf-detr.md`](rf-detr.md) | RF-DETR (detection transformer, Roboflow) | [🤗 RF-DETR-CoreAI](https://huggingface.co/mlboydaisuke/RF-DETR-CoreAI) | nano/small/medium/large fp32, set-exact dets cpu+gpu, **8.6–19.1 ms/frame M4 Max GPU** |
 
 ## The matrix (every meaningful platform × compute-unit cell, greedy, top-1 vs HF)
 

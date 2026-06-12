@@ -51,3 +51,42 @@ res = await fn({"x": rt.NDArray(np_or_tensor)})        # __call__ is ASYNC -> di
 Compare to an HF eager reference: cosine ≈ 1.0 and **top-1 argmax match** on a fixed prompt is the
 real pass criterion. A large hidden-state maxdiff alone is usually h16c compute noise, not a bug —
 let argmax/top-5 decide. Re-run parity after any OS/toolchain bump (the runtime is OS-coupled).
+
+## Detection transformers
+
+Found by the RF-DETR port (zoo's first detector, [zoo/rf-detr.md](../zoo/rf-detr.md)). Four
+platform bugs, each pinned by a minimal repro; all four bite ANY model, not just detection —
+detection transformers just happen to use the trigger ops (sine position embeds, bilinear
+sampling masks, coordinate floors).
+
+1. **`aten.arange` with float start/end/step aborts the converter** — C++
+   `bad_optional_access`, no Python error. Repro: any graph containing `torch.arange(8.0)`
+   (`torch.arange(8)` is fine; the *dtype* doesn't matter, the *argument types* do). DETR-class
+   models hit it via `gen_sineembed_for_position(…, d_model / 2)` — a float dim. Fix: precompute
+   the `dim_t` vector as a Python-list constant (kills the runtime arange/floordiv/pow chain too).
+2. **int64-comparison bool chains clobber unrelated live buffers at runtime.** A chain like
+   `((ix0 >= 0) & (ix0 < W)).to(float)` on `.long()` tensors makes a *different*, still-live fp
+   tensor (two ops upstream; even a graph OUTPUT) read back garbage/NaN once the subgraph
+   executes. Deterministic, unit-independent (CPU too); `clone()` / `contiguous()` barriers do
+   NOT protect the victim; skipping `optimize()` doesn't either. Diagnosis pattern: a tensor is
+   provably computed right (its other consumer is exact) but reads wrong later → buffer-liveness
+   bug, hunt the comparison chain. Fix: compute 0/1 masks in float arithmetic —
+   `1 - (x - x.clamp(lo, hi)).abs().clamp(max=1)` is exact on integer-valued floats.
+3. **`aten.floor` / `trunc` / `ceil` lower to IDENTITY on the GPU delegate** (CPU correct;
+   `round` rounds ties away-from-zero instead of to-even). Two natural workarounds also fail:
+   `div(x, 1, rounding_mode="floor")` simplifies to identity, and `float→long→float` roundtrips
+   are cast-cancelled by the converter **dropping truncation semantics (CPU too)**. The floor
+   that survives every unit: `torch.div(x * 2.0, 2.0, rounding_mode="floor")` — floor-div with
+   divisor ≠ 1 lowers correctly, and ×2/2 is a power-of-two scale (exact in fp). Corollary: the
+   "compute remainder with floor" advice above must use THIS floor on GPU paths.
+4. **`torch._assert` on data-dependent comparisons breaks torch.export non-strict**
+   (GuardOnDataDependentSymNode, torch 2.11) — ironically added by upstreams *for* export
+   compatibility. For static-shape exports the check is vacuous: no-op `torch._assert` around
+   `torch.export.export` and restore after.
+
+Detection-gate design note: gate detector numerics with **set-based matching** (per confident
+oracle detection: same class, IoU ≥ 0.75, score within tolerance), not positional top-k
+compare — DETR-family models emit near-duplicate predictions whose ranks swap under fp16/h16c
+noise, and positional compare overflags healthy conversions. Random-noise inputs flip two-stage
+top-k proposal selection at near-ties (the detection analog of the LLM argmax margin rule) —
+use real images for the gate, noise only as an informational probe.

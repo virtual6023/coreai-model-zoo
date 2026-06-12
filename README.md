@@ -16,6 +16,7 @@ on-device, with the conversion code and a knowledge base. Successor to
 | **Granite 4.0-H 1B / 350M** | [🤗 granite-4.0-h-CoreAI](https://huggingface.co/mlboydaisuke/granite-4.0-h-CoreAI) | Apache-2.0 |
 | **Qwen3-VL** (vision-language) | [🤗 2B](https://huggingface.co/mlboydaisuke/Qwen3-VL-2B-CoreAI) · [4B](https://huggingface.co/mlboydaisuke/Qwen3-VL-4B-CoreAI) · [8B](https://huggingface.co/mlboydaisuke/Qwen3-VL-8B-CoreAI) | Apache-2.0 |
 | **Gemma 4 E2B vision (VL)** (image+text) | `vl/` in [🤗 gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI) | Gemma |
+| **RF-DETR nano/small/medium/large** (object detection, no NMS — [#14](https://github.com/apple/coreai-models/issues/14)) | [🤗 RF-DETR-CoreAI](https://huggingface.co/mlboydaisuke/RF-DETR-CoreAI) | Apache-2.0 |
 
 ### Decode throughput (tok/s, greedy; output top-1 exact vs the Hugging Face reference)
 
@@ -34,6 +35,10 @@ custom kernels) except the ANE column. Per-model configurations, prefill numbers
 caveats: [`zoo/`](zoo/). The Gemma 4 QAT rows are re-exports of Google's official
 QAT-q4_0 checkpoints — same speed, **int4 ≈ bf16 quality by design**
 ([`zoo/gemma4-e2b.md`](zoo/gemma4-e2b.md)).
+
+Vision: **RF-DETR** detection runs **36 FPS (nano) / 17 FPS (medium) live on iPhone 17 Pro**
+and 8.6–19.1 ms/frame on the M4 Max GPU, fp32, detections set-exact vs the PyTorch
+reference, no NMS — [`zoo/rf-detr.md`](zoo/rf-detr.md).
 
 Vision-language: **Gemma 4 E2B VL** rides the SAME text decoder + PLE tables with a 3-line
 image splice — the image span is causal on E2B, so the engine needs nothing new

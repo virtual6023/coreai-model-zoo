@@ -10,13 +10,13 @@ on-device, with the conversion code and a knowledge base. Successor to
 |---|---|---|
 | **Qwen3.5-0.8B** | [🤗 qwen3.5-0.8B-CoreAI](https://huggingface.co/mlboydaisuke/qwen3.5-0.8B-CoreAI) | Apache-2.0 |
 | **Qwen3.5-2B** | [🤗 qwen3.5-2B-CoreAI](https://huggingface.co/mlboydaisuke/qwen3.5-2B-CoreAI) | Apache-2.0 |
+| **Qwen3.6-35B-A3B** (first MoE — Apple [#1](https://github.com/apple/coreai-models/issues/1); Mac-only) | [🤗 Qwen3.6-35B-A3B-CoreAI](https://huggingface.co/mlboydaisuke/Qwen3.6-35B-A3B-CoreAI) | Apache-2.0 |
 | **Gemma 4 E2B** (text, incl. official-QAT int4) | [🤗 gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI) | Gemma |
 | **Gemma 4 E4B** (text, official-QAT int4) | [🤗 gemma-4-E4B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E4B-CoreAI) | Gemma |
 | **LFM2.5-1.2B-Instruct** | [🤗 LFM2.5-1.2B-CoreAI](https://huggingface.co/mlboydaisuke/LFM2.5-1.2B-CoreAI) | LFM Open License v1.0 |
 | **Granite 4.0-H 1B / 350M** | [🤗 granite-4.0-h-CoreAI](https://huggingface.co/mlboydaisuke/granite-4.0-h-CoreAI) | Apache-2.0 |
 | **Qwen3-VL** (vision-language) | [🤗 2B](https://huggingface.co/mlboydaisuke/Qwen3-VL-2B-CoreAI) · [4B](https://huggingface.co/mlboydaisuke/Qwen3-VL-4B-CoreAI) · [8B](https://huggingface.co/mlboydaisuke/Qwen3-VL-8B-CoreAI) | Apache-2.0 |
 | **Gemma 4 E2B vision (VL)** (image+text) | `vl/` in [🤗 gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI) | Gemma |
-| **RF-DETR nano/small/medium/large** (object detection, no NMS — [#14](https://github.com/apple/coreai-models/issues/14)) | [🤗 RF-DETR-CoreAI](https://huggingface.co/mlboydaisuke/RF-DETR-CoreAI) | Apache-2.0 |
 
 ### Decode throughput (tok/s, greedy; output top-1 exact vs the Hugging Face reference)
 
@@ -29,6 +29,7 @@ on-device, with the conversion code and a knowledge base. Successor to
 | **Gemma 4 E2B** | **30.3** (QAT 30.7) | 6 | **77.0** (QAT 78.9) |
 | **Gemma 4 E4B** (official QAT) | **15.1** | — | **55.8** |
 | **Gemma 4 E2B VL** (image+text, official QAT) | **25.5** | — | **82.4** |
+| **Qwen3.6-35B-A3B** (MoE, 35B/~3B active, Mac-only) | — | — | **30.9** |
 
 Measured on the iOS 27 / macOS 27 beta, all on Apple's `coreai-pipelined` GPU engine (zero
 custom kernels) except the ANE column. Per-model configurations, prefill numbers, sizes, and
@@ -36,9 +37,13 @@ caveats: [`zoo/`](zoo/). The Gemma 4 QAT rows are re-exports of Google's officia
 QAT-q4_0 checkpoints — same speed, **int4 ≈ bf16 quality by design**
 ([`zoo/gemma4-e2b.md`](zoo/gemma4-e2b.md)).
 
-Vision: **RF-DETR** detection runs **36 FPS (nano) / 17 FPS (medium) live on iPhone 17 Pro**
-and 8.6–19.1 ms/frame on the M4 Max GPU, fp32, detections set-exact vs the PyTorch
-reference, no NMS — [`zoo/rf-detr.md`](zoo/rf-detr.md).
+**Qwen3.6-35B-A3B** is the zoo's first **Mixture-of-Experts** and the answer to Apple's
+most-requested model ([#1](https://github.com/apple/coreai-models/issues/1)): 35B params /
+~3B active, frontier quality on a Mac. We ship it honest about its limits — **30.9 tok/s,
+~4× behind MLX 4-bit** — because the Core AI GPU MoE expert-gather over-reads (Apple's own
+MoE path uses the same op; not a porting defect) and int4 doesn't pass this model's numerics.
+The number is expected to rise as the Core AI MoE path matures; the dense ports are the
+"fast on Mac today" picks. Mac-only at 35 GB — [`zoo/qwen3.6.md`](zoo/qwen3.6.md).
 
 Vision-language: **Gemma 4 E2B VL** rides the SAME text decoder + PLE tables with a 3-line
 image splice — the image span is causal on E2B, so the engine needs nothing new

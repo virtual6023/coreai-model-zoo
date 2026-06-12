@@ -119,7 +119,11 @@ overlay** of that package. Concretely, the additions are:
   columns, **no NMS**. fp32 ship (fp16 = +7% speed, near-tie noise). Patches rfdetr 1.7.1 at
   import: constant-dim_t sine embed (float-arange converter abort), bool-free + floor-safe
   bilinear (int64-cmp buffer clobber; GPU floor=identity → `div(2x,2,floor)`), `torch._assert`
-  no-op. Set-based detection gate vs torch fp32. `pip install rfdetr==1.7.1`, torch ≤ 2.11.
+  no-op. Set-based detection gate vs torch fp32 (near-tie flip budget ≤2 — the reference
+  itself flips confident queries under 1e-4 input noise on busy scenes). Also:
+  `--variant seg-nano…seg-2xlarge` = RF-DETR-Seg instance segmentation (6 sizes, masks
+  [1,Q,R/4,R/4], gated mask-IoU 1.000) and `--split` = backbone/head bundles for per-stage
+  compute units. `pip install rfdetr==1.7.1`, torch ≤ 2.11.
   See [`../zoo/rf-detr.md`](../zoo/rf-detr.md).
 
 ## Reproduce (env)

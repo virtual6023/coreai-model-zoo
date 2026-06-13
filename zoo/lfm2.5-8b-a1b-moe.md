@@ -7,8 +7,10 @@ The first two layers are dense (SwiGLU, intermediate 7168); **every layer after 
 top-4 sparse MoE** (expert MLP intermediate 1792, sigmoid routing + selection-only expert bias,
 no shared expert). 8.3B total / **~1.5B active per token**. Source: `LiquidAI/LFM2.5-8B-A1B`.
 
-**This is the zoo's first MoE on the iPhone-class fast path** — and it only became practical
-because of a custom Metal kernel that fixes how MoE decode reads memory.
+A custom Metal kernel fixes how MoE decode reads memory, making this practical to ship. **Shipped
+Mac-only** (the clean `sym8` int8 bundle): the int4 bundle that fits the iPhone was *validated to
+run on device* (first MoE on the phone) but is **not shipped** — non-QAT int4 doesn't hold quality
+(see below).
 
 ## The `gather_qmm` kernel — the MoE-decode fix
 
@@ -33,15 +35,16 @@ composes with the stateful KV+conv decode graph.
 | config | bundle | decode tok/s | quality (vs fp32) | verdict |
 |---|---:|---:|---|---|
 | int8 linear (GatherMM dense over-read), M4 Max | 8.8 GB | 39.2 | clean | the over-read baseline |
-| **sym8-gather (Mac), M4 Max** | **8.8 GB** | **140.4** | **clean (+1 flip/41 = fp16 ceiling)** | **Mac ship: 3.6× AND clean** |
+| **sym8-gather (Mac), M4 Max** — **SHIPPED** | **8.8 GB** | **140.4** | **clean (+1 flip/41 = fp16 ceiling)** | **Mac ship: 3.6× AND clean** |
 | int8km-gather (Mac), M4 Max | 8.4 GB | 141.0 | +5 flips/41 | superseded by sym8 (k-means lossier) |
-| int4km-gather, M4 Max / **iPhone 17 Pro** | **4.7 GB** | 162.7 / **31.3** | +12 flips/41 (degraded) | runs on iPhone, but NOT clean |
+| int4km-gather, M4 Max / **iPhone 17 Pro** — *not shipped* | **4.7 GB** | 162.7 / **31.3** | +12 flips/41 (degraded) | *validated to run* on iPhone, but NOT clean |
 
 **Honest bottom line:** the gather kernel gives the 3.6× speed on both int8 and int4. With the
 **symmetric-linear int8 kernel (`sym8`) the Mac bundle is BOTH 3.6× faster AND clean** (matches
-the shipped int8-linear quality). The **iPhone** needs int4 for size (8.8 GB int8 won't fit even
-with the memory-limit entitlement), and **non-QAT int4 is a hard quality wall** — so the iPhone
-bundle runs (first MoE on the phone, ~32 tok/s) but is measurably degraded, NOT a quality ship.
+the shipped int8-linear quality) — **this is what ships.** The **iPhone** needs int4 for size
+(8.8 GB int8 won't fit even with the memory-limit entitlement), and **non-QAT int4 is a hard
+quality wall**: the int4 bundle was *validated to run on device* (first MoE on the phone, ~32
+tok/s) but is measurably degraded, so it is **not shipped** (rebuild it locally if you want it).
 
 ## Quality — fp32-oracle margin-rule gate (honest)
 
@@ -74,12 +77,12 @@ Read honestly:
 ## Bundles
 
 **⬇️ [mlboydaisuke/LFM2.5-8B-A1B-CoreAI](https://huggingface.co/mlboydaisuke/LFM2.5-8B-A1B-CoreAI)** —
-ships the upstream LFM Open License v1.0 LICENSE file:
-- `gpu-pipelined/..._sym8_gather/` (8.8 GB, **Mac, clean** — the quality bundle)
-- `gpu-pipelined/..._int4km_gather/` (4.7 GB, **iPhone**, compact — degraded, see above)
+ships the upstream LFM Open License v1.0 LICENSE file. **Shipped: `gpu-pipelined/..._sym8_gather/`
+(8.8 GB, Mac, clean)** only. The iPhone int4 bundle is NOT on HF (degraded — see above); rebuild
+it locally if you want the on-device variant.
 
-Convert locally with
+Convert with
 [`conversion/export_lfm2_moe_metal_decode_pipelined.py`](../conversion/export_lfm2_moe_metal_decode_pipelined.py)
-(`sym8` = clean Mac; `int4km`/`aff4` = iPhone-jetsam-safe but degraded). Run with
+(`sym8` = clean Mac ship; `int4km`/`aff4` = iPhone-jetsam-safe but degraded). Run with
 `COREAI_CHUNK_THRESHOLD=1` (the decode graph's `input_ids` is static `[1,1]`; prefill runs as S=1
 pipelined steps via `llm-benchmark`).

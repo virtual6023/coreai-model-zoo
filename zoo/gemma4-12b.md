@@ -105,13 +105,27 @@ With it, **Gemma 4 12B runs on the stock pipelined engine for the first time.**
 
 | bundle | decode | prefill | size | quality |
 |---|---|---|---|---|
-| **`int8lin_msdpa`** (clean ship) | **22.2 tok/s** | 27.5 tok/s | 14 GB | engine greedy == fp32 oracle ("The capital of France is Paris.") |
-| `int4linsym_msdpa` (fast option) | **33.0 tok/s** | 43.4 tok/s | 8.2 GB | answers correctly ("Paris") but 4-bit-lossy phrasing (see int4 caveat) |
+| **`int8lin_msdpa_g8`** (clean ship) | **~23 tok/s** | 27.5 tok/s | 14 GB | engine greedy == fp32 oracle ("The capital of France is Paris.") |
+| `int4linsym_msdpa_g8` (fast option) | **~33 tok/s** | 43.4 tok/s | 8.2 GB | answers correctly ("Paris") but 4-bit-lossy phrasing (see int4 caveat) |
 
-The flash-decode kernel is one SIMD-group per head (lower occupancy than MPSGraph's attention
-GEMM), so decode is conservative for a 12B dense — but the GEMM **crashes** here, so a working
-kernel is the whole win. A higher-occupancy / absorbed-attention kernel is the speed follow-up.
-MLX's own 4-bit bench stays blocked by `mlx_lm` not yet supporting `gemma4_unified`.
+**Two flash-decode kernels** (both numerically identical — same engine token-match):
+
+- the **simple** kernel (one SIMD-group per query head) is near the int8 weight-bandwidth ceiling
+  at short context but its serial KV scan degrades at long context (the full/global layers read
+  *every* grown key — no window);
+- the **higher-occupancy** kernel (`--split-g 8`, the default, bundle suffix `_g8`) splits each
+  head's KV scan across 8 cooperating SIMD-groups (FlashDecoding-style) to keep the GPU busy.
+
+Measured int8 decode vs generated tokens (the global layers' KV scan growing with context):
+
+| gen tokens | simple | `g8` (default) |
+|---|---|---|
+| 64 | 28.2 | 28.6 |
+| 256 | 22.2 | 23.0 |
+| 1024 | 17.5 | **20.3** (+16%) |
+
+Decode is otherwise weight-bandwidth-bound (int8 14 GB ÷ ~400 GB/s ≈ 28.6 tok/s ceiling, hit at
+short context). MLX's own 4-bit bench stays blocked by `mlx_lm` not yet supporting `gemma4_unified`.
 
 ## Reproduce
 
@@ -119,7 +133,8 @@ MLX's own 4-bit bench stays blocked by `mlx_lm` not yet supporting `gemma4_unifi
 # overlay (on the coreai-models checkout): gemma4_dense_text.py + gemma4_dense_pipelined.py
 #   + gemma4_dense_metal_sdpa.py (the full-layer flash-decode SDPA kernel)
 cd coreai-models
-# clean ship (int8) — add --metal-sdpa to bypass the MPSGraph scratch-heap crash:
+# clean ship (int8) — --metal-sdpa bypasses the scratch-heap crash; --split-g 8 (the default) is
+# the higher-occupancy kernel (use --split-g 0 for the simple 1-SIMD-group kernel):
 .venv/bin/python ../coreai-models-community/conversion/export_gemma4_12b_decode_pipelined.py \
     int8lin --metal-sdpa --max-ctx 4096
 # faster 4-bit option:
@@ -127,10 +142,10 @@ cd coreai-models
     int4lin --lin-sym --metal-sdpa --max-ctx 4096
 # engine-truth gate (greedy vs fp32 oracle; run SOLO — parallel python-GPU = MTL4CommandQueueError):
 .venv/bin/python ../_smoke/engine_tokenmatch_gemma4_12b.py \
-    exports/gemma4_12b_qat_decode_int8lin_msdpa
+    exports/gemma4_12b_qat_decode_int8lin_msdpa_g8
 # bench:
 COREAI_CHUNK_THRESHOLD=1 .build/release/llm-benchmark \
-    --model exports/gemma4_12b_qat_decode_int8lin_msdpa -p 128 -g 256 -n 3
+    --model exports/gemma4_12b_qat_decode_int8lin_msdpa_g8 -p 128 -g 256 -n 3
 ```
 
 > Without `--metal-sdpa` the bundle still exports and is numerically clean, but **crashes on the

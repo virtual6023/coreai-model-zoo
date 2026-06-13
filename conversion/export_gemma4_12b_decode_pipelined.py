@@ -58,7 +58,12 @@ DTYPE = torch.float16
 
 
 def bundle_basename(hf_id: str) -> str:
-    return "gemma4_12b" + ("_qat" if "qat" in hf_id.lower() else "")
+    """``gemma4_<size>`` derived from the hf-id (so the 31B export isn't misnamed 12b)."""
+    import re
+
+    m = re.search(r"gemma-?4-(\w+?)-it", hf_id.lower())
+    size = m.group(1) if m else "12b"
+    return f"gemma4_{size}" + ("_qat" if "qat" in hf_id.lower() else "")
 
 
 def linear_quant_config(dtype: str = "int4", qscheme: str = "symmetric_with_clipping") -> dict:
@@ -131,15 +136,20 @@ def main() -> None:
     ap.add_argument("--metal-sdpa", action="store_true",
                     help="replace the FULL layers' SDPA with a custom flash-decode Metal kernel "
                          "(the scratch-heap-crash bypass; see gemma4_dense_metal_sdpa)")
+    ap.add_argument("--split-g", type=int, default=8,
+                    help="with --metal-sdpa: SIMD-groups per head for the higher-occupancy G-way "
+                         "sequence-split kernel (default 8, faster at long context); 0 = the simple "
+                         "1-SIMD-group kernel")
     ap.add_argument("--max-ctx", type=int, default=4096)
     ap.add_argument("--num-layers", type=int, default=None,
                     help="debug: truncated-layer export")
     ap.add_argument("--out-dir", default="exports")
     args = ap.parse_args()
 
+    split_g = args.split_g or None  # 0 -> simple 1-SIMD-group kernel
     name = f"{bundle_basename(args.hf_id)}_decode_{args.mode}" + ("sym" if args.lin_sym else "")
     if args.metal_sdpa:
-        name += "_msdpa"
+        name += "_msdpa" + (f"_g{split_g}" if split_g else "")
     if args.num_layers is not None:
         name += f"_l{args.num_layers}"
 
@@ -173,9 +183,10 @@ def main() -> None:
     # full-layer SDPA carries no quantizable weight, so order is otherwise irrelevant.
     custom_kernels: list = []
     if args.metal_sdpa:
-        print("metalizing FULL-layer SDPA -> custom flash-decode kernel "
-              "(scratch-heap bypass) ...", flush=True)
-        custom_kernels = [metalize_full_sdpa(model)]
+        variant = f"G-way split-{split_g}" if split_g else "1-SIMD-group"
+        print(f"metalizing FULL-layer SDPA -> custom flash-decode kernel ({variant}, "
+              "scratch-heap bypass) ...", flush=True)
+        custom_kernels = [metalize_full_sdpa(model, split_g=split_g)]
 
     print("exporting decode-only engine graph to Core AI dialect ...", flush=True)
     if custom_kernels:

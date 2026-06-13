@@ -53,6 +53,35 @@
   WWDC26 beta on GPU+ANE — use a shape-symint index or host-cache (see `coreai-beta-mpsgraph-kvwrite-bug.md`).
 - IEEE `-inf` mask is fine on GPU; dynamic shapes + control flow OK; custom Metal kernels available.
 - **MoE**: `SwitchLinear` + composite `GatherMM` (cast expert idx to uint16). `gpu_rules.md:262-276`.
+  ⚠️ **Decode speed**: `GatherMM` gathers then runs a DENSE matmul — it does NOT read only the
+  routed experts, so MoE decode is over-read-bound, not active-param-bound (Qwen3.6-35B-A3B
+  int8 sits at ~25% of BW; see `zoo/qwen3.6.md`). The over-read traffic scales *super-linearly*
+  with weight dtype: on LFM2.5-8B-A1B (the first direct Core-AI int4-vs-int8 MoE measurement)
+  int8 decode = 39 tok/s (8.8 GB bundle, 345 GB/s ≈ full-read BW-saturated) vs int4 = 170 tok/s
+  (5.0 GB; 848 GB/s effective > physical BW ⇒ int4 is NOT full-reading). So dropping a MoE to
+  int4 buys ~4× decode here, not the ~2× the byte ratio predicts — but non-QAT int4 flips
+  structural tokens (broken grammar), so int8 stays the quality floor. Engine-load only:
+  raw `AIModel.load(.gpu)` of a MoE graph aborts (GatherMM→ANE); the pipelined engine's
+  `expectFrequentReshapes` steers it off ANE (`zoo/qwen3.6.md`).
+  ✅ **FIXED — the `gather_qmm` custom Metal kernel landed** (`models/macos/moe_metal.py`,
+  2026-06-13; `ondevice/_gather_qmm_RESULTS.md`). A `coreai_torch.TorchMetalKernel` matvec
+  takes the routed expert indices as a kernel INPUT and reads ONLY the top-k experts' weight
+  slabs (`QP[w,n,e]`, `e = IDX[slot]` — indexed global load; the other E−k experts are never
+  fetched). `MetalSwitchGLU` is a drop-in for `SwitchGLU`; `metalize_moe(model, nbits)` swaps
+  every MoE layer. Reads weights k-means-palettized in-file (int8km 256-entry / int4km
+  16-entry, reusing the gemma4 FFN kernel's multi-row + tg-codebook structure). Key enabler:
+  rank-3 DSL buffer indexing + a data-dependent gather both lower+run on the GPU (probe
+  `_moe_kernel_probe.py`). Result on LFM2.5-8B-A1B M4 Max: int8 MoE decode **39 → 141 tok/s
+  (3.6×)** (the over-read removed by reading 4/32 experts), and an int4km bundle at **4.7 GB**
+  (iPhone-jetsam-safe) / 162.7 tok/s that **RUNS on the iPhone 17 Pro A19 Pro GPU at ~32 tok/s
+  decode = the zoo's first iPhone MoE on hardware**. Numerics: kernel == "select-from-all"
+  bit-for-bit; composes with the stateful KV+conv decode graph (GPU-only by construction, so the
+  old GatherMM→ANE raw-load abort can't occur). **Quality (fp32-oracle margin-rule gate, 41-tok
+  paragraph): the kernel is bit-exact — the EXPERT k-means quant introduces ~5 real flips/41 for
+  int8km (moderate, ≤1.2 margin) and ~12/41 for int4km (margins to 7.8 → clearly degraded); NOT
+  "fp16-faithful" (an earlier greedy "token-identical" read held only on a degenerate loop-y
+  prompt). Cleaner affine/linear-int8 expert kernel = follow-up.** `llm-benchmark` drives the
+  bundle; `llm-runner`'s gen path hard-asserts on the 3-state (KV+conv) layout (CLI limit).
 - **Memory-efficient load** (7B+): meta-device init + `load_state_dict(assign=True)` + per-layer streaming. `gpu_rules.md:279-297`.
 
 ## macOS vs iOS export (the official split)

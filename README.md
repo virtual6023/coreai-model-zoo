@@ -16,6 +16,7 @@ on-device, with the conversion code and a knowledge base. Successor to
 | **Gemma 4 E2B** (text, incl. official-QAT int4) | [🤗 gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI) | Gemma |
 | **Gemma 4 E4B** (text, official-QAT int4) | [🤗 gemma-4-E4B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E4B-CoreAI) | Gemma |
 | **LFM2.5-1.2B-Instruct** | [🤗 LFM2.5-1.2B-CoreAI](https://huggingface.co/mlboydaisuke/LFM2.5-1.2B-CoreAI) | LFM Open License v1.0 |
+| **LFM2.5-8B-A1B** (MoE, custom `gather_qmm` kernel — first iPhone MoE) | [🤗 LFM2.5-8B-A1B-CoreAI](https://huggingface.co/mlboydaisuke/LFM2.5-8B-A1B-CoreAI) | LFM Open License v1.0 |
 | **Granite 4.0-H 1B / 350M** | [🤗 granite-4.0-h-CoreAI](https://huggingface.co/mlboydaisuke/granite-4.0-h-CoreAI) | Apache-2.0 |
 | **Qwen3-VL** (vision-language) | [🤗 2B](https://huggingface.co/mlboydaisuke/Qwen3-VL-2B-CoreAI) · [4B](https://huggingface.co/mlboydaisuke/Qwen3-VL-4B-CoreAI) · [8B](https://huggingface.co/mlboydaisuke/Qwen3-VL-8B-CoreAI) | Apache-2.0 |
 | **Gemma 4 E2B vision (VL)** (image+text) | `vl/` in [🤗 gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI) | Gemma |
@@ -40,6 +41,13 @@ on-device, with the conversion code and a knowledge base. Successor to
 Measured on the iOS 27 / macOS 27 beta, Apple's `coreai-pipelined` GPU engine, zero custom
 kernels (ANE column excepted). Prefill, sizes, per-model caveats: [`zoo/`](zoo/).
 
+- **LFM2.5-8B-A1B** (MoE, 8.3B/~1.5B active) — the zoo's first MoE on the **iPhone**, via a
+  custom [`gather_qmm`](knowledge/compute-units-and-authoring.md) Metal kernel that reads only the
+  4/32 routed experts (fixes the GatherMM dense over-read): Mac int8 **39 → 141 tok/s (3.6×)**;
+  int4km **4.7 GB runs on iPhone 17 Pro at ~32 tok/s decode**. Kept OUT of the table above — it
+  uses a custom kernel and the expert k-means quant is a *measured* quality tradeoff (fp32-oracle
+  margin gate: int8km +5 / int4km +12 real flips per 41 tokens) — full honest numbers in
+  [`zoo/lfm2.5-8b-a1b-moe.md`](zoo/lfm2.5-8b-a1b-moe.md)
 - **Qwen3.6-35B-A3B** (MoE, 35B/~3B active) — 30.9 tok/s is expert-gather-bound in the
   current beta; [`zoo/qwen3.6.md`](zoo/qwen3.6.md)
 - **Qwen3.6-27B** (dense) — the quality pick: int8 output == fp16; dense reads the whole

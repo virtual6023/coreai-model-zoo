@@ -3,13 +3,16 @@ import Foundation
 /// Streaming segmenter for a tool-calling model's text deltas.
 ///
 /// Extends the marker-pair pattern of Apple's `ThinkTagParser` (in
-/// `CoreAILanguageModels`) to two tag families:
+/// `CoreAILanguageModels`) to two tag families, both configurable per model
+/// dialect:
 ///
-/// * `<think>…</think>` (marker pair configurable) — body streams out as
+/// * thinking (`<think>…</think>` by default) — body streams out as
 ///   `.reasoning` events, delta by delta.
-/// * `<tool_call>…</tool_call>` — body is NOT streamed; it accumulates and is
-///   emitted as one `.toolCallPayload` event when the closing tag arrives, so
-///   the caller hands the framework a complete JSON object per call.
+/// * tool calls (`<tool_call>…</tool_call>` for Hermes,
+///   `<|tool_call_start|>…<|tool_call_end|>` for LFM) — body is NOT
+///   streamed; it accumulates and is emitted as one `.toolCallPayload` event
+///   when the closing tag arrives, so the caller hands the dialect's parser
+///   a complete block body.
 ///
 /// Everything else streams out as `.text` the moment it can be proven not to
 /// be the start of a marker: the parser holds back at most `marker.count - 1`
@@ -17,9 +20,9 @@ import Foundation
 /// boundaries are still caught (same hold-back contract as `ThinkTagParser`).
 ///
 /// Feed incremental detokenizer output via `consume(_:)`; call `flush()` once
-/// at end of stream — an unterminated `<tool_call>` body is flushed as a
-/// (likely truncated) `.toolCallPayload` and left to the JSON parser to
-/// accept or reject.
+/// at end of stream — an unterminated tool-call body is flushed as a (likely
+/// truncated) `.toolCallPayload` and left to the dialect parser to accept or
+/// reject.
 package struct StreamTagParser {
     package enum Event: Equatable {
         case text(String)
@@ -35,16 +38,21 @@ package struct StreamTagParser {
 
     private let thinkOpen: String
     private let thinkClose: String
-    private let toolOpen = "<tool_call>"
-    private let toolClose = "</tool_call>"
+    private let toolOpen: String
+    private let toolClose: String
 
     private var buffer = ""
     private var mode: Mode = .text
     private var toolPayload = ""
 
-    package init(thinkOpen: String = "<think>", thinkClose: String = "</think>") {
+    package init(
+        thinkOpen: String = "<think>", thinkClose: String = "</think>",
+        toolOpen: String = "<tool_call>", toolClose: String = "</tool_call>"
+    ) {
         self.thinkOpen = thinkOpen
         self.thinkClose = thinkClose
+        self.toolOpen = toolOpen
+        self.toolClose = toolClose
     }
 
     package mutating func consume(_ delta: String) -> [Event] {

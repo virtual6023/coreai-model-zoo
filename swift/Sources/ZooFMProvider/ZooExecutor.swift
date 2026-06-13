@@ -5,8 +5,8 @@ import Synchronization
 import Tokenizers
 
 /// Executor for `ZooLanguageModel`: streaming generation with incremental
-/// `<tool_call>`/`<think>` detection, usage events, and an append-only KV
-/// fast path.
+/// tool-call/thinking marker detection (markers come from the model's
+/// `PromptDialect`), usage events, and an append-only KV fast path.
 ///
 /// ## Events
 /// Text streams out as `.response` events the moment each token decodes
@@ -40,6 +40,7 @@ public struct ZooExecutor: LanguageModelExecutor {
         let tokenizer: any Tokenizer
         let modelID: String
         let thinkingMarkers: ThinkingMarkers?
+        let dialect: any PromptDialect
 
         public static func == (lhs: Configuration, rhs: Configuration) -> Bool {
             lhs.modelID == rhs.modelID
@@ -53,6 +54,7 @@ public struct ZooExecutor: LanguageModelExecutor {
     private let tokenizer: any Tokenizer
     private let modelID: String
     private let thinkingMarkers: ThinkingMarkers?
+    private let dialect: any PromptDialect
     private let state = TurnState()
 
     public init(configuration: Configuration) throws {
@@ -60,6 +62,8 @@ public struct ZooExecutor: LanguageModelExecutor {
         self.tokenizer = configuration.tokenizer
         self.modelID = configuration.modelID
         self.thinkingMarkers = configuration.thinkingMarkers
+        self.dialect = configuration.dialect
+        zooFMDebug("executor for \(configuration.modelID): dialect=\(configuration.dialect.name)")
     }
 
     // MARK: - Prewarm
@@ -137,7 +141,7 @@ public struct ZooExecutor: LanguageModelExecutor {
         //    grammar enforcement).
         let mode = request.generationOptions.toolCallingMode?.kind ?? .allowed
         let tools = mode == .disallowed ? [] : request.enabledToolDefinitions
-        let promptText = PromptRenderer.render(
+        let promptText = dialect.render(
             transcript: request.transcript,
             tools: tools,
             requireToolCall: mode == .required)
@@ -208,7 +212,9 @@ public struct ZooExecutor: LanguageModelExecutor {
         //    parser; text goes out the moment it decodes.
         var parser = StreamTagParser(
             thinkOpen: thinkingMarkers?.open ?? "<think>",
-            thinkClose: thinkingMarkers?.close ?? "</think>")
+            thinkClose: thinkingMarkers?.close ?? "</think>",
+            toolOpen: dialect.toolCallOpen,
+            toolClose: dialect.toolCallClose)
         var pendingTokens: [Int] = []
         var previousDecodedText = ""
         var generatedCount = 0
@@ -268,11 +274,15 @@ public struct ZooExecutor: LanguageModelExecutor {
         // without this, text at the EOS boundary is lost.
         await dispatch(parser.flush())
 
-        // 6) Tool calls: every complete payload becomes one toolCall with a
-        //    minted id; consecutive .toolCalls events form one transcript
-        //    entry, so a multi-call turn lands as a single ToolCalls entry.
+        // 6) Tool calls: each payload parses through the model's dialect
+        //    (one block may contain several calls — LFM emits
+        //    `[fn1(…), fn2(…)]`); every call gets a minted id, and
+        //    consecutive .toolCalls events form one transcript entry, so a
+        //    multi-call turn lands as a single ToolCalls entry.
         if !toolPayloads.isEmpty {
-            let calls = try toolPayloads.map(Self.parseToolCall)
+            let calls = try toolPayloads.flatMap {
+                try dialect.parseToolCalls($0, tools: tools)
+            }
             for call in calls {
                 await channel.send(
                     .toolCalls(
@@ -310,35 +320,6 @@ public struct ZooExecutor: LanguageModelExecutor {
         }
 
         await Task.yield()
-    }
-
-    // MARK: - Tool call parsing
-
-    package struct ParsedToolCall {
-        package let name: String
-        package let argumentsJSON: String
-    }
-
-    /// `{"name": "...", "arguments": {...}}` — anything else throws.
-    package static func parseToolCall(_ payload: String) throws -> ParsedToolCall {
-        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard
-            let data = trimmed.data(using: .utf8),
-            let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-            let name = object["name"] as? String,
-            !name.isEmpty
-        else {
-            throw ZooFMProviderError.malformedToolCall(payload: trimmed)
-        }
-        let arguments = object["arguments"] ?? [String: Any]()
-        guard
-            let argumentsData = try? JSONSerialization.data(
-                withJSONObject: arguments, options: [.fragmentsAllowed, .sortedKeys]),
-            let argumentsJSON = String(data: argumentsData, encoding: .utf8)
-        else {
-            throw ZooFMProviderError.malformedToolCall(payload: trimmed)
-        }
-        return ParsedToolCall(name: name, argumentsJSON: argumentsJSON)
     }
 }
 

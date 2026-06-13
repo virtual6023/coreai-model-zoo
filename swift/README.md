@@ -19,10 +19,13 @@ let answer = try await session.respond(to: "What's the weather in Tokyo?")
 ```
 
 The same `session.respond` / `streamResponse` / `Tool` / `@Generable` API as Apple's built-in
-model. The model emits Qwen/Hermes-style `<tool_call>` JSON, the framework executes your Swift
-`Tool`, and the model answers grounded on the result. `<think>` blocks stream to
-`Transcript.reasoning` entries; `session.usage` reports prompt/generated token counts including
-KV-cache reuse (`cachedTokenCount`).
+model. The framework executes your Swift `Tool` and the model answers grounded on the result.
+Tool calls are rendered and parsed in each model's **native dialect** (picked automatically by
+probing the tokenizer vocab): Qwen3.5 speaks Hermes `<tool_call>` JSON, LFM2.5 speaks its
+pythonic `<|tool_call_start|>[fn(arg=…)]<|tool_call_end|>` special-token form — an in-context
+format instruction does not override a model's training prior, so each family gets its own
+`PromptDialect`. `<think>` blocks stream to `Transcript.reasoning` entries; `session.usage`
+reports prompt/generated token counts including KV-cache reuse (`cachedTokenCount`).
 
 **Requirements** — same as [`../apps/`](../apps/README.md): clone `coreai-models` at this repo's
 root and apply the four-patch stack (the package depends on it by path; hybrid-architecture
@@ -54,11 +57,14 @@ swift run -c release zoo-fm-gate <bundle-dir> multiturn   # per-turn latency + K
 ZOO_FM_DEBUG=1 ...                                        # log KV fast-path / reset decisions
 ```
 
+Verification harness scenarios also include `toolchain` (a dependent two-tool sequence) on top
+of the three above.
+
 Known limits (see [`../knowledge/fm-provider.md`](../knowledge/fm-provider.md) for the full
 gap table): no `.guidedGeneration` on pipelined bundles (on-GPU sampling exposes no logits —
-schema requests throw `unsupportedCapability`); one session per model instance at a time; the
-tool-prompt dialect is Qwen/Hermes ChatML (LFM2.5's native special-token dialect is documented
-but not yet rendered).
+schema requests throw `unsupportedCapability`); one session per model instance at a time. Tool
+dialects: Hermes (Qwen3.5) and LFM2.5 ship; granite-4.0 (Hermes syntax, `<|start_of_role|>`
+framing) and gemma4 (custom non-JSON) are recorded as follow-ups.
 
 ## CoreAIRunner (draft)
 

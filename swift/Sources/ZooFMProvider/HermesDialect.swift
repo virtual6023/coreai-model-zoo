@@ -1,23 +1,31 @@
 import Foundation
 import FoundationModels
 
-/// Renders a FoundationModels `Transcript` into the Qwen/Hermes tool-calling
-/// ChatML dialect:
+/// The Qwen/Hermes tool-calling ChatML dialect (the de-facto open-model
+/// standard, and the zoo default):
 ///
 /// * tools advertised in the system message inside `<tools>…</tools>`, one
 ///   `{"type":"function","function":{…}}` JSON line each
+/// * calls emitted as `<tool_call>{json}</tool_call>` blocks, one JSON
+///   object per block
 /// * past tool calls replayed as assistant `<tool_call>{json}</tool_call>`
 ///   turns, tool results as user-role `<tool_response>…</tool_response>`
 /// * reasoning entries are NOT replayed (matches the upstream chat
 ///   templates, which strip historic thinking)
 ///
-/// LFM2.5 and Granite bundles speak the same `<|im_start|>` ChatML framing,
-/// so one renderer covers the current zoo lineup.
-enum PromptRenderer {
+/// Verified on qwen3.5 (gates S3–S5). granite-4.0 uses the same tool syntax
+/// but `<|start_of_role|>` framing — it needs its own dialect, not this one.
+public struct HermesDialect: PromptDialect {
+    public let name = "hermes"
+    public let toolCallOpen = "<tool_call>"
+    public let toolCallClose = "</tool_call>"
+
+    public init() {}
+
     /// - Parameter requireToolCall: render a "must call a tool" instruction
     ///   (GenerationOptions.ToolCallingMode.required). Local models have no
     ///   grammar-level enforcement, so this is the honest approximation.
-    static func render(
+    public func render(
         transcript: Transcript,
         tools: [Transcript.ToolDefinition],
         requireToolCall: Bool = false
@@ -61,7 +69,7 @@ enum PromptRenderer {
     /// Appends the `<tools>` block to the system message. No tools — no
     /// block: a plain-chat session's prompt is byte-identical to one rendered
     /// without tool support.
-    private static func systemContent(
+    private func systemContent(
         base: String,
         tools: [Transcript.ToolDefinition],
         requireToolCall: Bool
@@ -69,16 +77,8 @@ enum PromptRenderer {
         guard !tools.isEmpty else { return base }
         var lines: [String] = []
         for tool in tools {
-            let schemaJSON: String
-            if let data = try? JSONEncoder().encode(tool.parameters),
-                let s = String(data: data, encoding: .utf8)
-            {
-                schemaJSON = s
-            } else {
-                schemaJSON = "{}"
-            }
             lines.append(
-                #"{"type": "function", "function": {"name": "\#(tool.name)", "description": "\#(tool.description)", "parameters": \#(schemaJSON)}}"#
+                #"{"type": "function", "function": {"name": "\#(tool.name)", "description": "\#(tool.description)", "parameters": \#(schemaJSON(tool))}}"#
             )
         }
         let requirement = requireToolCall
@@ -104,13 +104,41 @@ enum PromptRenderer {
             """
     }
 
-    private static func segmentsText(_ segments: [Transcript.Segment]) -> String {
-        segments.compactMap { segment in
-            switch segment {
-            case .text(let text): return text.content
-            case .structure(let structure): return structure.content.jsonString
-            default: return nil
+    /// `{"name": "...", "arguments": {...}}` per block; a top-level JSON
+    /// ARRAY of such objects is tolerated (some Hermes-tuned models emit
+    /// multi-call arrays). Anything else throws.
+    public func parseToolCalls(
+        _ payload: String,
+        tools: [Transcript.ToolDefinition]
+    ) throws -> [ParsedToolCall] {
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            let data = trimmed.data(using: .utf8),
+            let root = try? JSONSerialization.jsonObject(with: data)
+        else {
+            throw ZooFMProviderError.malformedToolCall(payload: trimmed)
+        }
+        let objects: [[String: Any]]
+        if let object = root as? [String: Any] {
+            objects = [object]
+        } else if let array = root as? [[String: Any]], !array.isEmpty {
+            objects = array
+        } else {
+            throw ZooFMProviderError.malformedToolCall(payload: trimmed)
+        }
+        return try objects.map { object in
+            guard let name = object["name"] as? String, !name.isEmpty else {
+                throw ZooFMProviderError.malformedToolCall(payload: trimmed)
             }
-        }.joined(separator: "\n")
+            let arguments = object["arguments"] ?? [String: Any]()
+            guard
+                let argumentsData = try? JSONSerialization.data(
+                    withJSONObject: arguments, options: [.fragmentsAllowed, .sortedKeys]),
+                let argumentsJSON = String(data: argumentsData, encoding: .utf8)
+            else {
+                throw ZooFMProviderError.malformedToolCall(payload: trimmed)
+            }
+            return ParsedToolCall(name: name, argumentsJSON: argumentsJSON)
+        }
     }
 }

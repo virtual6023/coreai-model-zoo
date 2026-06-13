@@ -79,6 +79,25 @@ final class ToolCallLog: @unchecked Sendable {
     }
 }
 
+/// Captures the tool definitions the framework hands the executor, so the
+/// mock gate can re-render the finished transcript through each dialect.
+final class ToolDefLog: @unchecked Sendable {
+    static let shared = ToolDefLog()
+    private let lock = NSLock()
+    private var defs: [Transcript.ToolDefinition] = []
+
+    func record(_ definitions: [Transcript.ToolDefinition]) {
+        lock.lock()
+        if defs.isEmpty { defs = definitions }
+        lock.unlock()
+    }
+    var recorded: [Transcript.ToolDefinition] {
+        lock.lock()
+        defer { lock.unlock() }
+        return defs
+    }
+}
+
 func dumpTranscript(_ transcript: Transcript) {
     print("[transcript]")
     for entry in transcript {
@@ -138,6 +157,7 @@ struct MockExecutor: LanguageModelExecutor {
         // mock sent WWDC-339-style upfront usage on `.response` — on the
         // 27.0 beta that materializes an EMPTY Response entry on tool turns,
         // which is exactly why ZooExecutor doesn't do it.)
+        ToolDefLog.shared.record(request.enabledToolDefinitions)
         let sawToolOutput = request.transcript.contains { entry in
             if case .toolOutput = entry { return true } else { return false }
         }
@@ -275,8 +295,50 @@ struct ZooFMGate {
         }
         if response.content.isEmpty { failures.append("final response empty") }
 
+        // Dialect renders of the REAL framework-built transcript (the round
+        // trip above produced instructions/prompt/reasoning/toolCalls/
+        // toolOutput/response entries — exactly what `render` must replay).
+        let defs = ToolDefLog.shared.recorded
+        if defs.count != 2 { failures.append("tool definitions not captured (\(defs.count))") }
+
+        let hermesPrompt = HermesDialect().render(
+            transcript: session.transcript, tools: defs, requireToolCall: false)
+        for needle in [
+            "<tools>",
+            #"{"type": "function", "function": {"name": "get_weather""#,
+            "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": ",
+            "<tool_response>",
+            "<|im_start|>assistant\n",
+        ] {
+            if !hermesPrompt.contains(needle) {
+                failures.append("hermes render missing: \(needle.prefix(60))")
+            }
+        }
+
+        let lfmPrompt = LFMDialect().render(
+            transcript: session.transcript, tools: defs, requireToolCall: false)
+        for needle in [
+            "List of tools: [{\"name\": \"get_weather\"",
+            "<|tool_call_start|>[get_weather(city=\"Tokyo\"), get_local_time(city=\"Tokyo\")]<|tool_call_end|>",
+            "<|im_start|>tool\n<|tool_response_start|>",
+            "<|tool_response_end|><|im_end|>",
+        ] {
+            if !lfmPrompt.contains(needle) {
+                failures.append("lfm render missing: \(needle.prefix(60))")
+            }
+        }
+        if lfmPrompt.contains("<tools>") {
+            failures.append("lfm render leaked the hermes <tools> block")
+        }
+        // Reasoning entries must not be replayed by either dialect.
+        if hermesPrompt.contains("I need weather and time.")
+            || lfmPrompt.contains("I need weather and time.")
+        {
+            failures.append("reasoning entry leaked into a render")
+        }
+
         if failures.isEmpty {
-            print("GATE PASS: mock (framework semantics)")
+            print("GATE PASS: mock (framework semantics + dialect renders)")
         } else {
             for failure in failures { print("GATE FAIL: \(failure)") }
             exit(1)
@@ -336,15 +398,23 @@ struct ZooFMGate {
         let r3 = merged(collect(["The answer is 1 <", "2 and 3."]))
         expect(r3.text == "The answer is 1 <2 and 3.", "3: hold-back text lost: '\(r3.text)'")
 
-        // 4) parseToolCall: well-formed, argument-less, malformed
-        let c4 = try ZooExecutor.parseToolCall(
-            #"{"name": "get_weather", "arguments": {"city": "Tokyo"}}"#)
-        expect(c4.name == "get_weather", "4: name mismatch")
-        expect(c4.argumentsJSON.contains("Tokyo"), "4: args mismatch")
-        let c5 = try ZooExecutor.parseToolCall(#"{"name": "ping"}"#)
-        expect(c5.argumentsJSON == "{}", "5: empty args mismatch: \(c5.argumentsJSON)")
+        // 4) Hermes parse: well-formed, argument-less, multi-call array,
+        //    malformed
+        let hermes = HermesDialect()
+        let c4 = try hermes.parseToolCalls(
+            #"{"name": "get_weather", "arguments": {"city": "Tokyo"}}"#, tools: [])
+        expect(c4.count == 1 && c4[0].name == "get_weather", "4: name mismatch")
+        expect(c4[0].argumentsJSON.contains("Tokyo"), "4: args mismatch")
+        let c5 = try hermes.parseToolCalls(#"{"name": "ping"}"#, tools: [])
+        expect(c5[0].argumentsJSON == "{}", "5: empty args mismatch: \(c5[0].argumentsJSON)")
+        let c5b = try hermes.parseToolCalls(
+            #"[{"name": "a", "arguments": {}}, {"name": "b", "arguments": {"x": 1}}]"#,
+            tools: [])
+        expect(
+            c5b.count == 2 && c5b[1].name == "b" && c5b[1].argumentsJSON == #"{"x":1}"#,
+            "5b: hermes array form mismatch")
         do {
-            _ = try ZooExecutor.parseToolCall("not json at all")
+            _ = try hermes.parseToolCalls("not json at all", tools: [])
             expect(false, "6: malformed payload did not throw")
         } catch is ZooFMProviderError {
             // expected
@@ -354,8 +424,88 @@ struct ZooFMGate {
         let r6 = merged(collect(["<tool_call>{\"name\": \"trunc\""]))
         expect(r6.payloads.count == 1, "7: partial payload not flushed")
 
+        // ---- LFM dialect ----
+
+        func collectLFM(_ chunks: [String]) -> [StreamTagParser.Event] {
+            let lfm = LFMDialect()
+            var parser = StreamTagParser(
+                toolOpen: lfm.toolCallOpen, toolClose: lfm.toolCallClose)
+            var events: [StreamTagParser.Event] = []
+            for chunk in chunks { events += parser.consume(chunk) }
+            events += parser.flush()
+            return events
+        }
+        let lfm = LFMDialect()
+
+        // 6) LFM special-token markers straddling chunk boundaries, with
+        //    trailing visible text after the call block (the model card's
+        //    "call first, then text" shape)
+        let r8 = merged(
+            collectLFM([
+                "<|tool_call_st", "art|>[get_weather(city=\"To",
+                "kyo\")]<|tool_call_e", "nd|>Checking now.",
+            ]))
+        expect(r8.payloads == ["[get_weather(city=\"Tokyo\")]"], "8: LFM payload mismatch \(r8.payloads)")
+        expect(r8.text == "Checking now.", "8: trailing text lost: '\(r8.text)'")
+
+        // 7) pythonic parse: canonical two-call block (the S6c emission)
+        let p1 = try lfm.parseToolCalls(
+            #"[get_weather(city="Tokyo"), get_local_time(city="Tokyo")]"#, tools: [])
+        expect(p1.count == 2, "9: expected 2 calls, got \(p1.count)")
+        expect(
+            p1[0].name == "get_weather" && p1[0].argumentsJSON == #"{"city":"Tokyo"}"#,
+            "9: first call mismatch \(p1)")
+        expect(p1[1].name == "get_local_time", "9: second call mismatch")
+
+        // 8) tolerance: single quotes, bare values with spaces, no brackets
+        let p2 = try lfm.parseToolCalls(#"[navigate(to='Tokyo Station', mode=walking)]"#, tools: [])
+        expect(
+            p2[0].argumentsJSON == #"{"mode":"walking","to":"Tokyo Station"}"#,
+            "10: tolerant values mismatch \(p2[0].argumentsJSON)")
+        let p3 = try lfm.parseToolCalls(#"get_weather(city="Tokyo")"#, tools: [])
+        expect(p3.count == 1, "11: bracketless call not parsed")
+
+        // 9) tolerance: Python literals, nested containers, floats
+        let p4 = try lfm.parseToolCalls(
+            #"[configure(flag=True, n=3, ratio=1.5, note=None, opts={"a": [1, 2], "b": 'x'})]"#,
+            tools: [])
+        expect(
+            p4[0].argumentsJSON
+                == #"{"flag":true,"n":3,"note":null,"opts":{"a":[1,2],"b":"x"},"ratio":1.5}"#,
+            "12: literal/nesting mismatch \(p4[0].argumentsJSON)")
+
+        // 10) positional argument maps onto a single-parameter tool (schema
+        //     hint path, exercised directly on the parser)
+        var positional = PythonicCallParser(
+            #"get_weather("Tokyo")"#, parameterHints: ["get_weather": ["city"]])
+        let p5 = positional.parseCalls()
+        expect(
+            p5.count == 1 && p5[0].argumentsJSON == #"{"city":"Tokyo"}"#,
+            "13: positional mapping failed \(p5)")
+
+        // 11) salvage: an unparseable call is skipped, the rest executes
+        let p6 = try lfm.parseToolCalls(
+            #"[get_w&eather(city), get_weather(city="Tokyo")]"#, tools: [])
+        expect(
+            p6.count == 1 && p6[0].argumentsJSON == #"{"city":"Tokyo"}"#,
+            "14: salvage failed \(p6)")
+
+        // 12) truncated tail (stream cut mid-string) still yields the call
+        let p7 = try lfm.parseToolCalls(#"[get_weather(city="Tok"#, tools: [])
+        expect(
+            p7.count == 1 && p7[0].argumentsJSON == #"{"city":"Tok"}"#,
+            "15: truncated tail mismatch \(p7)")
+
+        // 13) nothing salvageable throws
+        do {
+            _ = try lfm.parseToolCalls("no call here at all!!", tools: [])
+            expect(false, "16: garbage payload did not throw")
+        } catch is ZooFMProviderError {
+            // expected
+        }
+
         if failures.isEmpty {
-            print("GATE PASS: selftest (parser + tool-call JSON)")
+            print("GATE PASS: selftest (parser + hermes + lfm dialects)")
         } else {
             for failure in failures { print("GATE FAIL: \(failure)") }
             exit(1)

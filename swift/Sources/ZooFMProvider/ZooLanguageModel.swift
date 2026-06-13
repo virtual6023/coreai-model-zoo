@@ -10,9 +10,10 @@ import Tokenizers
 /// Built on the same public pieces as Apple's adapter — an `InferenceEngine`
 /// from `CoreAIRunner.makeInferenceEngine()` and a `Tokenizer` from
 /// `LanguageBundle.loadTokenizer()` — so any bundle that runs in the chat
-/// apps runs here. Prompting is the Qwen/Hermes tool-calling ChatML dialect,
-/// rendered by `PromptRenderer` (the bundle tokenizer's Jinja template is not
-/// relied on).
+/// apps runs here. Prompting goes through a per-model `PromptDialect`
+/// (auto-picked by probing the tokenizer vocab: LFM tool special tokens →
+/// `LFMDialect`, otherwise the Qwen/Hermes ChatML dialect); the bundle
+/// tokenizer's Jinja template is not relied on.
 ///
 /// ```swift
 /// let model = try await ZooLanguageModel(resourcesAt: bundleDir)
@@ -36,6 +37,9 @@ public struct ZooLanguageModel: LanguageModel {
     /// Chain-of-thought marker pair, probed from the tokenizer vocab at init
     /// (nil when the model has no reasoning markup).
     let thinkingMarkers: ThinkingMarkers?
+    /// The model family's tool-calling dialect (rendering + stream markers +
+    /// call parsing). Auto-probed from the tokenizer vocab unless overridden.
+    let dialect: any PromptDialect
 
     public var capabilities: LanguageModelCapabilities {
         var capabilities: [LanguageModelCapabilities.Capability] = [.toolCalling]
@@ -50,7 +54,8 @@ public struct ZooLanguageModel: LanguageModel {
             engine: engine,
             tokenizer: tokenizer,
             modelID: modelID,
-            thinkingMarkers: thinkingMarkers
+            thinkingMarkers: thinkingMarkers,
+            dialect: dialect
         )
     }
 
@@ -59,7 +64,10 @@ public struct ZooLanguageModel: LanguageModel {
     /// `CoreAILanguageModel(resourcesAt:)`. Sets `COREAI_CHUNK_THRESHOLD=1`
     /// (required by decode-only S=1 bundles, and harmless otherwise) before
     /// engine creation.
-    public init(resourcesAt url: URL) async throws {
+    ///
+    /// - Parameter dialect: tool-calling dialect override; nil probes the
+    ///   tokenizer vocab (`defaultDialect(probing:)`).
+    public init(resourcesAt url: URL, dialect: (any PromptDialect)? = nil) async throws {
         setenv("COREAI_CHUNK_THRESHOLD", "1", 1)
         let bundle = try LanguageBundle(at: url)
         let runner = CoreAIRunner(from: bundle)
@@ -68,7 +76,8 @@ public struct ZooLanguageModel: LanguageModel {
         self.init(
             engine: engine,
             tokenizer: tokenizer,
-            modelID: url.standardizedFileURL.path
+            modelID: url.standardizedFileURL.path,
+            dialect: dialect
         )
     }
 
@@ -76,11 +85,15 @@ public struct ZooLanguageModel: LanguageModel {
     /// session's executor cache — use a bundle-unique string (the bundle
     /// path); two models with the same ID share one executor and its engine
     /// state.
-    public init(engine: any InferenceEngine, tokenizer: any Tokenizer, modelID: String) {
+    public init(
+        engine: any InferenceEngine, tokenizer: any Tokenizer, modelID: String,
+        dialect: (any PromptDialect)? = nil
+    ) {
         self.engine = engine
         self.tokenizer = tokenizer
         self.modelID = modelID
         self.thinkingMarkers = ThinkingMarkers(probing: tokenizer)
+        self.dialect = dialect ?? defaultDialect(probing: tokenizer)
     }
 }
 

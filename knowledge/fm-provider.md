@@ -80,7 +80,7 @@ via the bundle tokenizer, greedy default + temperature override.
 |---|---|
 | Plain chat, streaming, multi-turn | ✅ via Apple's adapter, zero code |
 | Reasoning models (`<think>`) | ✅ routed to `Transcript.reasoning` entries automatically |
-| Tool calling | ❌ in Apple's adapter (tool entries skipped, capability never declared) → ✅ `ZooFMProvider` (multi-call, streaming parse) |
+| Tool calling | ❌ in Apple's adapter (tool entries skipped, capability never declared) → ✅ `ZooFMProvider` (multi-call, streaming parse, **per-model dialect** — Hermes + LFM native) |
 | Guided generation (`@Generable`, schema) | ⚠️ only when `engine.supportsLogits` — **GPU-pipelined engines sample on-GPU and return `false`**, so every zoo pipelined bundle lacks `.guidedGeneration`; the sequential engine has it. `ZooFMProvider` throws `unsupportedCapability` on schema requests |
 | `session.prewarm()` | ❌ silent no-op for Core AI models (see trap 1) → ✅ `ZooFMProvider` (real 1-token generate + reset) |
 | Usage accounting (`.updateUsage`) | ❌ placeholder in Apple's adapter → ✅ `ZooFMProvider` (per-turn, summed into `session.usage`, `cachedTokenCount` on KV reuse) |
@@ -135,6 +135,49 @@ Two beta behaviors the packaged executor encodes (verified macOS 27.0 beta):
   beware). The packaged executor pumps the stream through a task it can settle on the next
   respond instead of breaking the engine stream directly.
 
+## Tool-calling dialects (per model family)
+
+A model emits tool calls in the format it was *fine-tuned* on, and an in-context instruction
+will not override that prior (trap 9). So tool calling can't share one renderer/parser across
+families — each needs its own. `ZooFMProvider` factors this into a `PromptDialect`:
+
+```swift
+public protocol PromptDialect: Sendable {
+    var name: String { get }
+    var toolCallOpen: String { get }      // stream markers delimiting a call block
+    var toolCallClose: String { get }
+    func render(transcript:tools:requireToolCall:) -> String          // whole prompt, framing included
+    func parseToolCalls(_ body: String, tools:) throws -> [ParsedToolCall]   // a block may hold N calls
+}
+```
+
+The dialect owns the **whole** render (not just the tool block) because families differ in
+framing too, not only call syntax. `ZooLanguageModel` auto-selects by probing the tokenizer
+vocab (`defaultDialect(probing:)`); pass `dialect:` to override.
+
+Two dialects ship, both verified against the bundle's own `chat_template.jinja` (render the
+template with jinja2 and diff against the Swift output — the template is the spec):
+
+| | Hermes (Qwen3.5, the default) | LFM (LFM2.5) |
+|---|---|---|
+| tools advertised | system `<tools>{json}…</tools>` block | system `List of tools: [{json}, …]` text |
+| call syntax | `<tool_call>\n{"name","arguments"}\n</tool_call>` | `<\|tool_call_start\|>[fn(a="x"), fn2(n=3)]<\|tool_call_end\|>` (pythonic) |
+| result replay | user-role `<tool_response>…</tool_response>` | `tool`-role `<\|tool_response_start\|>…<\|tool_response_end\|>` |
+| framing | ChatML `<\|im_start\|>` | ChatML `<\|im_start\|>` |
+| parse | JSON object (or array of objects) | tolerant pythonic scanner |
+
+The LFM parser must be **tolerant**: the model emits half-mangled argument lists (single
+quotes, bare/unquoted values, Python `True`/`None`, nested containers, truncated tails). It
+salvages per-call (a broken call is skipped, the rest of the block still executes) and maps a
+lone positional argument onto a single-parameter tool via the schema. The replay path sorts
+kwargs so re-rendered calls are byte-stable (the KV fast path's prefix match depends on it).
+
+Recon for two more families (templates read; dialects not yet built): **granite-4.0** uses
+Hermes tool *syntax* but `<|start_of_role|>…<|end_of_role|>…<|end_of_text|>` framing (so it
+needs its own dialect, not Hermes); **gemma4** is fully custom and non-JSON
+(`<|tool_call>call:name{key:value}<tool_call|>`, a `<|"|>` quote token, `<|channel>thought`
+for reasoning).
+
 ## Traps
 
 1. **`prewarm` has a default no-op extension.** Implement `prewarm(model:transcript:)`
@@ -161,11 +204,13 @@ Two beta behaviors the packaged executor encodes (verified macOS 27.0 beta):
    generation mid-`<think>`, the turn produces only reasoning events and the session throws
    "ended without producing a response". Budget caps with thinking headroom (or use a
    non-thinking model).
-9. **Tool-prompt dialects don't transfer.** LFM2.5 ignores in-context Hermes
-   `<tool_call>`-JSON instructions and emits its native special-token dialect
-   (`<|tool_call_start|>[fn(arg=…)]<|tool_call_end|>`, pythonic) — the training prior wins.
-   Tool calling per model family needs its native rendering+parsing; the Qwen/Hermes dialect
-   in `ZooFMProvider` covers Qwen3.5 today (Granite/LFM native dialects are follow-ups).
+9. **Tool-prompt dialects don't transfer — render+parse each model's NATIVE format.** LFM2.5
+   ignores in-context Hermes `<tool_call>`-JSON instructions and emits its trained
+   special-token dialect (`<|tool_call_start|>[fn(arg=…)]<|tool_call_end|>`, pythonic) — the
+   training prior wins over the prompt. So tool calling per model family needs its own
+   rendering + stream-marker detection + call parsing. `ZooFMProvider` packages this as a
+   `PromptDialect` protocol (see next section); Hermes (Qwen3.5) and LFM are implemented,
+   picked automatically by probing the tokenizer vocab.
 
 ## Sources
 

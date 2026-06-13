@@ -29,29 +29,33 @@ Mixture-of-Experts FFN** (DeepSeek-V3 style):
 **~30B parameters, ~3B active per token** → a strong local-coder that decodes at
 **Mac-class speed** because only 4 of 64 experts fire per token.
 
-**⬇️ Converted `.aimodel` bundle:** `glm_4_7_flash_decode_int8hu_block32_sym/`
-(30 GB, full LanguageBundle incl. tokenizer; decode-only loop-free for the
-[pipelined engine](../knowledge/pipelined-engine.md)). *HF upload user-gated.*
+**⬇️ Converted `.aimodel` bundle:** `glm_4_7_flash_decode_sym8_gather/` (30 GB, **the
+`gather_qmm` kernel build — 2.6× faster, same clean int8 quality**; full LanguageBundle incl.
+tokenizer; decode-only loop-free for the [pipelined engine](../knowledge/pipelined-engine.md)).
+Convert with [`conversion/export_glm47_moe_metal_decode_pipelined.py`](../conversion/export_glm47_moe_metal_decode_pipelined.py).
 
 ## Measured (macOS 27 beta, M4 Max 128 GB, release `llm-benchmark`, `COREAI_CHUNK_THRESHOLD=1`)
 
 | config | bundle | prefill tok/s | decode tok/s | numerics |
 |---|---:|---:|---:|---|
-| **int8 linear per-block-32 + untied absmax int8 head (`int8hu --head-sym`) = SHIP** | **30 GB** | **20.5** | **20.3** | engine ≡ eager-int8 (exact 32-token greedy match); fp16 port ≡ fp32 oracle 16/16 |
+| **`sym8` gather kernel (reads 4/64 experts) = SHIP** | **30 GB** | **53.6** | **52.4** | **CLEAN — 0 introduced flips/18 vs fp16** (sym8 = the int8lin recipe via a bit-exact gather) |
+| int8 linear (GatherMM, reads all 64 experts) | 30 GB | 20.5 | 20.3 | engine ≡ eager-int8 (exact 32-token greedy); fp16 ≡ fp32 oracle 16/16 — same int8 quality, dense over-read |
 | int8hu @ -p 64 -g 128 (lower context) | 30 GB | 20.5 | 20.5 | — (decode is context-stable; set by per-token weight read, not KV growth) |
 | int8hu, 2-layer control | 1.6 GB | 420 | 502 | — (engine-path smoke / scratch-heap pre-check) |
 
-**~20 tok/s for a 30B-class local coder on a Mac** — comfortably above reading
-speed, and the rate is flat across context (the per-token weight read dominates,
-not the KV cache). It is **slower than the [Qwen3.6-35B-A3B](qwen3.6.md) MoE
-(30.9 tok/s)** despite fewer experts (64 vs 256), for an architectural reason:
-GLM runs **full MLA attention with a materialized full-MHA KV cache on all 47
-layers** (per-token it does the q_a→q_b `768→5120` and kv_a→kv_b `512→8960`
-up-projections and a 20-head × 256-dim SDPA), whereas Qwen3.6 is a 3:1 hybrid
-that runs cheap GatedDeltaNet linear-attention on ¾ of its layers. The
-**absorbed-MLA** form (cache only the `[512]` latent, fold the up-projection into
-Q) is the decode/​KV-memory lever and is the planned follow-up; the naive
-materialized form shipped here trades that speed for a de-risked first MLA port.
+**52 tok/s for a 30B-class local coder on a Mac** (was 20.3 before the `gather_qmm`
+kernel — **2.6×**). The [`gather_qmm`](../knowledge/compute-units-and-authoring.md)
+Metal kernel reads only the 4 routed experts (4/64) instead of `GatherMM`'s dense
+all-64 read, at the **same clean int8 quality** (`sym8` = the shipped int8lin recipe
+via a bit-exact gather: 0 introduced flips/18 vs fp16). The rate is flat across
+context (the per-token weight read dominates, not the KV cache). GLM is still a bit
+slower than [Qwen3.6-35B-A3B](qwen3.6.md) (64.9 tok/s, also gather'd) for an
+architectural reason: GLM runs **full MLA attention with a materialized full-MHA KV
+cache on all 47 layers** (per-token: q_a→q_b `768→5120`, kv_a→kv_b `512→8960`
+up-projections + a 20-head × 256-dim SDPA), whereas Qwen3.6 is a 3:1 hybrid that runs
+cheap GatedDeltaNet linear-attention on ¾ of its layers. The **absorbed-MLA** form
+(cache only the `[512]` latent, fold the up-projection into Q) is the remaining
+decode/​KV-memory lever — the planned follow-up now that the expert-gather is solved.
 
 ## Numerics
 

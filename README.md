@@ -36,7 +36,7 @@ on-device, with the conversion code and a knowledge base. Successor to
 | **Gemma 4 E2B VL** (image+text, official QAT) | **25.5** | — | **82.4** |
 | **Qwen3.6-35B-A3B** (MoE, 35B/~3B active, Mac-only) | — | — | **64.9** † |
 | **Qwen3.6-27B** (dense, Mac-only) | — | — | **15.9** |
-| **GLM-4.7-Flash** (MoE + MLA, 30B/~3B active, Mac-only) | — | — | **20.3** |
+| **GLM-4.7-Flash** (MoE + MLA, 30B/~3B active, Mac-only) | — | — | **52.4** † |
 
 Measured on the iOS 27 / macOS 27 beta, Apple's `coreai-pipelined` GPU engine, zero custom
 kernels (ANE column + **†** excepted). **†** = MoE bundle using the custom

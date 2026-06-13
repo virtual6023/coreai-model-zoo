@@ -42,6 +42,26 @@ Hard-won, verified notes on Apple's Core AI (iOS/macOS 27) — what the docs don
 - [`coreai-beta-mpsgraph-kvwrite-bug.md`](coreai-beta-mpsgraph-kvwrite-bug.md) — the data-indexed
   in-graph KV write SIGSEGV (FB23024751 / apple#5): platform-agnostic (GPU too), host-cache workaround.
 
+## Agent & app layer (FM framework / App Intents / Evaluations / security)
+- [`spotlight-rag-third-party.md`](spotlight-rag-third-party.md) — running Apple's WWDC26
+  `SpotlightSearchTool` (local RAG as one Tool) behind a **third-party zoo model** via
+  `KitLanguageModel`: only `.toolCalling` is needed (not guided generation), the tool returns
+  metadata-not-body (hydrate with a companion `fetch_note` tool), guidance level is a token gate,
+  and the thinking-model `/no_think` mitigation. Verified example: `coreai-kit/Examples/SpotlightChat`.
+- [`dynamic-profiles-local-models.md`](dynamic-profiles-local-models.md) — WWDC26 `DynamicProfile`
+  (242) routing between **two local zoo models** (0.6B triage ↔ 4B expert) in one
+  `LanguageModelSession`, fully on-device/airplane-mode — the config Apple's on-device↔PCC demo
+  doesn't show. The body-purity rule, switch re-prefill cost, two-resident-model footprint, and
+  why the model-decision channel must be guided-gen (not a tool) on the stock engine. Example:
+  `agent-demos/DualProfileChat`.
+- [`agentic-security-checklist.md`](agentic-security-checklist.md) — pre-ship checklist for
+  on-device LLM agent apps (WWDC 347+343): indirect prompt injection, the Lethal Trifecta,
+  `.onToolCall`/`.historyTransform` guardrails, App-Intents risk-based confirmation +
+  `authenticationPolicy` + `OwnershipProvidingEntity`.
+- [`evaluations-framework.md`](evaluations-framework.md) — Apple's Evaluations framework
+  (WWDC 298/299/335) mapped to this project's oracle/margin gates; the `disallowed`-trajectory
+  injection test; a Vault-style on-device eval suite.
+
 ## Runtime & decode internals
 - [`compression.md`](compression.md) — this project's LLM-specific empirical compression notes
   (int8 floor, per-subsystem sensitivity); pairs with `compression-reference.md`.

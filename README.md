@@ -15,6 +15,8 @@ on-device, with the conversion code and a knowledge base. Successor to
 | **GLM-4.7-Flash** (MoE + MLA, Mac-only) | [🤗 GLM-4.7-Flash-CoreAI](https://huggingface.co/mlboydaisuke/GLM-4.7-Flash-CoreAI) | MIT |
 | **Gemma 4 E2B** (text, incl. official-QAT int4) | [🤗 gemma-4-E2B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI) | Gemma |
 | **Gemma 4 E4B** (text, official-QAT int4) | [🤗 gemma-4-E4B-CoreAI](https://huggingface.co/mlboydaisuke/gemma-4-E4B-CoreAI) | Gemma |
+| **Gemma 4 12B** (dense, Mac-only — custom flash-decode kernel ‡) | [🤗 Gemma-4-12B-CoreAI](https://huggingface.co/mlboydaisuke/Gemma-4-12B-CoreAI) | Gemma |
+| **Gemma 4 31B** (dense, Mac-only — custom flash-decode kernel ‡) | [🤗 Gemma-4-31B-CoreAI](https://huggingface.co/mlboydaisuke/Gemma-4-31B-CoreAI) | Gemma |
 | **LFM2.5-1.2B-Instruct** | [🤗 LFM2.5-1.2B-CoreAI](https://huggingface.co/mlboydaisuke/LFM2.5-1.2B-CoreAI) | LFM Open License v1.0 |
 | **LFM2.5-8B-A1B** (MoE, custom `gather_qmm` kernel — first iPhone MoE) | [🤗 LFM2.5-8B-A1B-CoreAI](https://huggingface.co/mlboydaisuke/LFM2.5-8B-A1B-CoreAI) | LFM Open License v1.0 |
 | **Granite 4.0-H 1B / 350M** | [🤗 granite-4.0-h-CoreAI](https://huggingface.co/mlboydaisuke/granite-4.0-h-CoreAI) | Apache-2.0 |
@@ -37,11 +39,16 @@ on-device, with the conversion code and a knowledge base. Successor to
 | **Qwen3.6-35B-A3B** (MoE, 35B/~3B active, Mac-only) | — | — | **64.9** † |
 | **Qwen3.6-27B** (dense, Mac-only) | — | — | **15.9** |
 | **GLM-4.7-Flash** (MoE + MLA, 30B/~3B active, Mac-only) | — | — | **52.4** † |
+| **Gemma 4 12B** (dense, Mac-only) | — | — | **23** int8 / **33** int4 ‡ |
+| **Gemma 4 31B** (dense, Mac-only) | — | — | **17.2** int4 ‡ |
 
 Measured on the iOS 27 / macOS 27 beta, Apple's `coreai-pipelined` GPU engine, zero custom
-kernels (ANE column + **†** excepted). **†** = MoE bundle using the custom
+kernels (ANE column + **†**/**‡** excepted). **†** = MoE bundle using the custom
 [`gather_qmm`](knowledge/compute-units-and-authoring.md) Metal kernel (reads only the routed
-experts). Prefill, sizes, per-model caveats: [`zoo/`](zoo/).
+experts). **‡** = dense bundle whose full/global-attention SDPA is a custom flash-decode Metal
+kernel — the stock MPSGraph SDPA crashes on the ≥16-head × 512 Q (a GPU scratch-heap overflow,
+[apple/coreai-models#27](https://github.com/apple/coreai-models/issues/27)), so these models are
+**unrunnable without it**. Prefill, sizes, per-model caveats: [`zoo/`](zoo/).
 
 - **LFM2.5-8B-A1B** (MoE, 8.3B/~1.5B active) — a 32-expert MoE made practical by a custom
   [`gather_qmm`](knowledge/compute-units-and-authoring.md) Metal kernel that reads only the 4/32
@@ -57,6 +64,11 @@ experts). Prefill, sizes, per-model caveats: [`zoo/`](zoo/).
   model's numerics); [`zoo/qwen3.6.md`](zoo/qwen3.6.md)
 - **Qwen3.6-27B** (dense) — the quality pick: int8 output == fp16; dense reads the whole
   model per token, hence slower than the ~3B-active MoE; [`zoo/qwen3.6-27b.md`](zoo/qwen3.6-27b.md)
+- **Gemma 4 12B / 31B** (dense) — the first Core AI runtime for a ≥16-head × 512 full-attention
+  model: the stock SDPA crashes on the full layers' Q (scratch-heap overflow, #27), so the full
+  layers' SDPA is a **custom flash-decode Metal kernel** (block-GQA, higher-occupancy sequence-split
+  for long context). 12B int8 == fp32 oracle; 31B is a frontier dense at int4 (4 global KV heads);
+  [`zoo/gemma4-12b.md`](zoo/gemma4-12b.md) · [`zoo/gemma4-31b.md`](zoo/gemma4-31b.md)
 - **GLM-4.7-Flash** (MoE + MLA, 30B/~3B active) — the zoo's first Multi-head Latent Attention
   model; full-MLA attention on all 47 layers (absorbed-MLA is the speed follow-up);
   [`zoo/glm-4.7-flash.md`](zoo/glm-4.7-flash.md)

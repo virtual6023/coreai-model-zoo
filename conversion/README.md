@@ -127,6 +127,12 @@ overlay** of that package. Concretely, the additions are:
   `models/macos/gemma4_dense_{text,pipelined,metal_sdpa}.py`. Gate via
   `_smoke/engine_tokenmatch_gemma4_12b.py`, run SOLO (parallel python-GPU → MTL4CommandQueueError).
   See [`../zoo/gemma4-12b.md`](../zoo/gemma4-12b.md).
+- **Gemma 4 31B (dense) pipelined (same script): `export_gemma4_12b_decode_pipelined.py int4lin --lin-sym --metal-sdpa --hf-id google/gemma-4-31B-it-qat-q4_0-unquantized`** —
+  the **frontier dense** twin of the 12B (60 layers, hidden 5376, 32 heads, **4 global KV heads**,
+  same dual head_dim 256/512). Reuses the 12B overlay verbatim — the `--metal-sdpa` kernel does
+  block GQA over the unified cache (`repeat_interleave` replication: correct for the 31B's 4 global
+  heads, a no-op for the 12B's 1). Same #27 scratch-heap bypass. Ship = `int4lin --lin-sym`
+  (q4_0 QAT, ~19 GB Mac-only, M4 Max 17.2 tok/s decode). See [`../zoo/gemma4-31b.md`](../zoo/gemma4-31b.md).
 
 - **RF-DETR (object detection, in this dir): `export_rf_detr.py --variant {nano|small|medium|large}`** —
   the zoo's first detector ([apple/coreai-models#14](https://github.com/apple/coreai-models/issues/14)):

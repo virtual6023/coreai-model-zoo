@@ -124,6 +124,19 @@ def save_tokenizer(model_dir: str, out_dir: Path) -> None:
         src = Path(model_dir) / f
         if src.exists():
             shutil.copy(src, tok_dir / f)
+    # Chat-EOS fix: gemma4's base tokenizer_config declares eos_token = "<eos>" (the
+    # document-end token, id 1), but the instruct model ENDS A CHAT TURN with "<turn|>"
+    # (id 106) — generation_config lists eos_token_id = [1, 106, 50]. A generic chat app
+    # derives its stop sequence from tokenizer.eos_token alone, so with "<eos>" it never
+    # stops on the turn terminator and runs to max_tokens. Set eos_token to the turn
+    # terminator (the gemma convention — gemma2/3 use "<end_of_turn>") so any app stops
+    # cleanly. Render-safe: the chat template emits literal "<turn|>", not {{ eos_token }}.
+    cfg_path = tok_dir / "tokenizer_config.json"
+    if cfg_path.exists():
+        cfg = json.loads(cfg_path.read_text())
+        if cfg.get("eos_token") == "<eos>":
+            cfg["eos_token"] = "<turn|>"
+            cfg_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
 
 
 def main() -> None:

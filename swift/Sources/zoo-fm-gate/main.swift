@@ -504,6 +504,51 @@ struct ZooFMGate {
             // expected
         }
 
+        // 14) stray/mismatched closers must TERMINATE (no infinite loop) and
+        //     still salvage the well-formed part. Each of these pinned a CPU
+        //     core before the arg/list/dict loop terminators landed.
+        let p8 = try lfm.parseToolCalls(#"get_weather(city="Tokyo"})"#, tools: [])
+        expect(
+            p8.count == 1 && p8[0].argumentsJSON == #"{"city":"Tokyo"}"#,
+            "17: stray `}` after args \(p8)")
+        let p9 = try lfm.parseToolCalls(#"[get_weather(city="Tokyo"]"#, tools: [])
+        expect(
+            p9.count == 1 && p9[0].argumentsJSON == #"{"city":"Tokyo"}"#,
+            "18: stray `]` for `)` \(p9)")
+        let p10 = try lfm.parseToolCalls(#"[configure(items=[1, 2)]"#, tools: [])
+        expect(
+            p10.count == 1 && p10[0].argumentsJSON == #"{"items":[1,2]}"#,
+            "19: stray `)` inside list arg \(p10)")
+        let p11 = try lfm.parseToolCalls(##"[configure(opts={"a": 1])]"##, tools: [])
+        expect(
+            p11.count == 1 && p11[0].argumentsJSON == #"{"opts":{"a":1}}"#,
+            "20: stray `]` inside dict arg \(p11)")
+
+        // 15) a bareword VALUE containing `[` is scanned to the next structural
+        //     delimiter (parseValue treats only a LEADING `[` as a list), so it
+        //     neither spins nor mis-parses as a list.
+        let p12 = try lfm.parseToolCalls(#"set(expr=arr[i)"#, tools: [])
+        expect(
+            p12.count == 1 && p12[0].argumentsJSON == #"{"expr":"arr[i"}"#,
+            "21: bareword containing `[` \(p12)")
+
+        // 16) regression for the terminator fix: parseBareword must NOT consume
+        //     the `)`, so an empty value keeps its terminator and `fn(a=)` still
+        //     parses (a="").
+        let p13 = try lfm.parseToolCalls(#"fn(a=)"#, tools: [])
+        expect(
+            p13.count == 1 && p13[0].argumentsJSON == #"{"a":""}"#,
+            "22: empty value keeps its `)` terminator \(p13)")
+
+        // 17) jsonEscaped: FM tool descriptions are natural language, so a quote
+        //     or newline must be escaped to keep the <tools> / List-of-tools JSON
+        //     valid and one line per tool (the bug behind the shared
+        //     toolDescriptorJSON helper).
+        expect(jsonEscaped(#"a "quote""#) == #"a \"quote\""#, "23: jsonEscaped quote")
+        expect(jsonEscaped("line\nbreak") == #"line\nbreak"#, "24: jsonEscaped newline")
+        expect(jsonEscaped("tab\tend") == #"tab\tend"#, "25: jsonEscaped tab")
+        expect(jsonEscaped(#"back\slash"#) == #"back\\slash"#, "26: jsonEscaped backslash")
+
         if failures.isEmpty {
             print("GATE PASS: selftest (parser + hermes + lfm dialects)")
         } else {

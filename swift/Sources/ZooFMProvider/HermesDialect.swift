@@ -30,40 +30,32 @@ public struct HermesDialect: PromptDialect {
         tools: [Transcript.ToolDefinition],
         requireToolCall: Bool = false
     ) -> String {
-        var system = "You are a helpful assistant."
-        var body = ""
-
-        func append(role: String, _ content: String) {
-            body += "<|im_start|>\(role)\n\(content)<|im_end|>\n"
-        }
-
-        for entry in transcript {
-            switch entry {
-            case .instructions(let instructions):
-                system = segmentsText(instructions.segments)
-            case .prompt(let prompt):
-                append(role: "user", segmentsText(prompt.segments))
-            case .response(let response):
-                append(role: "assistant", segmentsText(response.segments))
-            case .toolCalls(let calls):
-                let rendered = calls.map { call in
-                    "<tool_call>\n{\"name\": \"\(call.toolName)\", \"arguments\": \(call.arguments.jsonString)}\n</tool_call>"
-                }.joined(separator: "\n")
-                append(role: "assistant", rendered)
-            case .toolOutput(let output):
-                append(
-                    role: "user",
-                    "<tool_response>\n\(segmentsText(output.segments))\n</tool_response>")
-            default:
-                continue  // reasoning entries are not replayed into history
-            }
-        }
-
-        let head =
-            "<|im_start|>system\n"
-            + systemContent(base: system, tools: tools, requireToolCall: requireToolCall)
-            + "<|im_end|>\n"
-        return head + body + "<|im_start|>assistant\n"
+        renderChatML(
+            transcript: transcript,
+            defaultSystem: "You are a helpful assistant.",
+            head: { system in
+                "<|im_start|>system\n"
+                    + self.systemContent(
+                        base: system, tools: tools, requireToolCall: requireToolCall)
+                    + "<|im_end|>\n"
+            },
+            toolEntry: { entry in
+                switch entry {
+                case .toolCalls(let calls):
+                    // toolName is JSON-escaped (it is interpolated into a JSON
+                    // string); arguments.jsonString is already valid JSON.
+                    let rendered = calls.map { call in
+                        "<tool_call>\n{\"name\": \"\(jsonEscaped(call.toolName))\", \"arguments\": \(call.arguments.jsonString)}\n</tool_call>"
+                    }.joined(separator: "\n")
+                    return ("assistant", rendered)
+                case .toolOutput(let output):
+                    return (
+                        "user",
+                        "<tool_response>\n\(self.segmentsText(output.segments))\n</tool_response>")
+                default:
+                    return nil  // reasoning entries are not replayed into history
+                }
+            })
     }
 
     /// Appends the `<tools>` block to the system message. No tools — no
@@ -77,9 +69,8 @@ public struct HermesDialect: PromptDialect {
         guard !tools.isEmpty else { return base }
         var lines: [String] = []
         for tool in tools {
-            lines.append(
-                #"{"type": "function", "function": {"name": "\#(tool.name)", "description": "\#(tool.description)", "parameters": \#(schemaJSON(tool))}}"#
-            )
+            // Shared, JSON-escaped descriptor wrapped in Hermes' function envelope.
+            lines.append(#"{"type": "function", "function": \#(toolDescriptorJSON(tool))}"#)
         }
         let requirement = requireToolCall
             ? "\nYou MUST respond with a function call; do not answer directly.\n"

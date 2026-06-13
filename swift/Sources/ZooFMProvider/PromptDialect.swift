@@ -70,6 +70,14 @@ public struct ParsedToolCall: Sendable, Equatable {
 /// Picks the dialect for a bundle by probing its tokenizer vocab: models
 /// trained with the LFM tool special tokens get the LFM dialect, everything
 /// else defaults to Hermes (the de-facto open-model standard).
+///
+/// SCOPE: the probe only distinguishes LFM (special tokens present) from
+/// Hermes (everything else). granite-4.0 and gemma4 use Hermes-INCOMPATIBLE
+/// framing/syntax (see the family notes on `PromptDialect`) and would be
+/// mis-rendered as Hermes by this fallback — load those with an explicit
+/// `dialect:` once their dialects exist. The fallback is correct for today's
+/// shipped lineup (qwen → Hermes, LFM → LFM); the call site
+/// (`ZooLanguageModel.init`) documents the same caveat.
 public func defaultDialect(probing tokenizer: any Tokenizer) -> any PromptDialect {
     if tokenizer.convertTokenToId("<|tool_call_start|>") != nil,
         tokenizer.convertTokenToId("<|tool_call_end|>") != nil
@@ -114,6 +122,58 @@ extension PromptDialect {
             let properties = object["properties"] as? [String: Any]
         else { return nil }
         return Array(properties.keys)
+    }
+
+    /// The `{"name", "description", "parameters"}` tool descriptor that both
+    /// the Hermes `<tools>` block and LFM's `List of tools:` line embed (Hermes
+    /// additionally wraps it in `{"type":"function","function":…}`). Name and
+    /// description are JSON-escaped: FM tool descriptions are natural language,
+    /// so a `"` or newline would otherwise emit invalid JSON inside the block
+    /// and break the one-line-per-tool layout. Shared so the two dialects can't
+    /// drift on escaping again.
+    package func toolDescriptorJSON(_ tool: Transcript.ToolDefinition) -> String {
+        #"{"name": "\#(jsonEscaped(tool.name))", "description": "\#(jsonEscaped(tool.description))", "parameters": \#(schemaJSON(tool))}"#
+    }
+
+    /// ChatML turn framing shared by Hermes and LFM
+    /// (`<|im_start|>role\n…<|im_end|>`). The two dialects frame
+    /// instructions/prompt/response turns identically and differ only in the
+    /// system block and how tool calls/results render, so those are injected:
+    /// `head` builds the system block from the final system text (return "" for
+    /// no block), and `toolEntry` renders the dialect-specific `.toolCalls` /
+    /// `.toolOutput` entries (returning nil for any entry it doesn't handle,
+    /// e.g. reasoning, which is never replayed). granite/gemma have different
+    /// framing and do not use this.
+    package func renderChatML(
+        transcript: Transcript,
+        defaultSystem: String,
+        head: (_ system: String) -> String,
+        toolEntry: (Transcript.Entry) -> (role: String, content: String)?
+    ) -> String {
+        var system = defaultSystem
+        var body = ""
+
+        func append(role: String, _ content: String) {
+            body += "<|im_start|>\(role)\n\(content)<|im_end|>\n"
+        }
+
+        for entry in transcript {
+            switch entry {
+            case .instructions(let instructions):
+                system = segmentsText(instructions.segments)
+            case .prompt(let prompt):
+                append(role: "user", segmentsText(prompt.segments))
+            case .response(let response):
+                append(role: "assistant", segmentsText(response.segments))
+            default:
+                if let rendered = toolEntry(entry) {
+                    append(role: rendered.role, rendered.content)
+                }
+                // else: reasoning (and any other entry) is not replayed.
+            }
+        }
+
+        return head(system) + body + "<|im_start|>assistant\n"
     }
 }
 

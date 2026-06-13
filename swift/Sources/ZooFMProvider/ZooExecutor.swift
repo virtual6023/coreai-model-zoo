@@ -221,18 +221,35 @@ public struct ZooExecutor: LanguageModelExecutor {
         var reasoningEventCount = 0
         var sentResponseText = false
         var toolPayloads: [String] = []
+        // Whitespace-only text held back pending the next event (see dispatch).
+        var pendingWhitespace = ""
         let eosTokenId = tokenizer.eosTokenId
 
         func dispatch(_ events: [StreamTagParser.Event]) async {
             for event in events {
                 switch event {
                 case .text(let text):
-                    sentResponseText = true
-                    await channel.send(.response(action: .appendText(text, tokenCount: 1)))
+                    // Hold whitespace-only text: if a tool-call block follows, it
+                    // is inter-block padding (e.g. the `\n\n` between `</think>`
+                    // and the tool-call marker) that would otherwise materialize a
+                    // whitespace-only Response transcript entry. Real text flushes
+                    // any held whitespace ahead of it; held whitespace that is
+                    // never followed by real text (trailing, or right before a tool
+                    // call) is dropped.
+                    if text.allSatisfy(\.isWhitespace) {
+                        pendingWhitespace += text
+                    } else {
+                        let combined = pendingWhitespace + text
+                        pendingWhitespace = ""
+                        sentResponseText = true
+                        await channel.send(
+                            .response(action: .appendText(combined, tokenCount: 1)))
+                    }
                 case .reasoning(let text):
                     reasoningEventCount += 1
                     await channel.send(.reasoning(action: .appendText(text, tokenCount: 1)))
                 case .toolCallPayload(let payload):
+                    pendingWhitespace = ""  // drop inter-block whitespace before a call
                     toolPayloads.append(payload)
                 }
             }
@@ -240,8 +257,10 @@ public struct ZooExecutor: LanguageModelExecutor {
 
         do {
             for try await tokenId in relay {
-                generatedCount += 1
                 if let eos = eosTokenId, Int(tokenId) == eos { break }
+                // Count AFTER the EOS check so the never-emitted EOS sentinel is
+                // not folded into Usage.Output (matches Apple's reference adapter).
+                generatedCount += 1
 
                 pendingTokens.append(Int(tokenId))
                 let decodedText = tokenizer.decode(tokens: pendingTokens)

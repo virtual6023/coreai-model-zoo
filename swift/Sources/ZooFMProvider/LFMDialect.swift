@@ -35,42 +35,36 @@ public struct LFMDialect: PromptDialect {
         tools: [Transcript.ToolDefinition],
         requireToolCall: Bool = false
     ) -> String {
-        var system = ""
-        var body = ""
-
-        func append(role: String, _ content: String) {
-            body += "<|im_start|>\(role)\n\(content)<|im_end|>\n"
-        }
-
-        for entry in transcript {
-            switch entry {
-            case .instructions(let instructions):
-                system = segmentsText(instructions.segments)
-            case .prompt(let prompt):
-                append(role: "user", segmentsText(prompt.segments))
-            case .response(let response):
-                append(role: "assistant", segmentsText(response.segments))
-            case .toolCalls(let calls):
-                let rendered = calls.map { call in
-                    pythonicCall(name: call.toolName, argumentsJSON: call.arguments.jsonString)
-                }.joined(separator: ", ")
-                append(role: "assistant", "<|tool_call_start|>[\(rendered)]<|tool_call_end|>")
-            case .toolOutput(let output):
-                append(
-                    role: "tool",
-                    "<|tool_response_start|>\(segmentsText(output.segments))<|tool_response_end|>")
-            default:
-                continue  // reasoning entries are not replayed into history
-            }
-        }
-
-        var head = ""
-        let systemText = systemContent(
-            base: system, tools: tools, requireToolCall: requireToolCall)
-        if !systemText.isEmpty {
-            head = "<|im_start|>system\n\(systemText)<|im_end|>\n"
-        }
-        return head + body + "<|im_start|>assistant\n"
+        renderChatML(
+            transcript: transcript,
+            defaultSystem: "",
+            head: { system in
+                // The template renders NO system block when there is neither
+                // instructions nor tools (native fidelity, unlike Hermes' default).
+                let systemText = self.systemContent(
+                    base: system, tools: tools, requireToolCall: requireToolCall)
+                return systemText.isEmpty ? "" : "<|im_start|>system\n\(systemText)<|im_end|>\n"
+            },
+            toolEntry: { entry in
+                switch entry {
+                case .toolCalls(let calls):
+                    // Pythonic call syntax, not JSON — names are bare identifiers,
+                    // so no JSON escaping applies here (string VALUES are escaped
+                    // inside pythonicCall).
+                    let rendered = calls.map { call in
+                        self.pythonicCall(
+                            name: call.toolName, argumentsJSON: call.arguments.jsonString)
+                    }.joined(separator: ", ")
+                    return ("assistant", "<|tool_call_start|>[\(rendered)]<|tool_call_end|>")
+                case .toolOutput(let output):
+                    return (
+                        "tool",
+                        "<|tool_response_start|>\(self.segmentsText(output.segments))<|tool_response_end|>"
+                    )
+                default:
+                    return nil  // reasoning entries are not replayed into history
+                }
+            })
     }
 
     /// `system + "\n" + "List of tools: [json, json]"` — the template's
@@ -81,9 +75,7 @@ public struct LFMDialect: PromptDialect {
         requireToolCall: Bool
     ) -> String {
         guard !tools.isEmpty else { return base }
-        let toolJSONs = tools.map { tool in
-            #"{"name": "\#(jsonEscaped(tool.name))", "description": "\#(jsonEscaped(tool.description))", "parameters": \#(schemaJSON(tool))}"#
-        }
+        let toolJSONs = tools.map { toolDescriptorJSON($0) }
         var out = base
         if !out.isEmpty { out += "\n" }
         out += "List of tools: [\(toolJSONs.joined(separator: ", "))]"
@@ -213,6 +205,15 @@ package struct PythonicCallParser {
             skipWhitespace()
             guard let c = peek else { break }  // truncated tail — take what we have
             if c == ")" { advance(); break }
+            // A stray/mismatched closer (`]` or `}`) ends the arg list. None of
+            // the value parsers consume a closer, so without this the loop would
+            // spin forever on the frozen position (the hang this tolerant parser
+            // shipped with — reachable from realistic mangled output like
+            // `get_weather(city="Tokyo"})`). Treating it as a terminator both
+            // guarantees progress and salvages the arguments parsed so far.
+            // parseBareword is deliberately NOT changed to consume closers —
+            // `fn(a=)` needs its `)` to survive as the terminator.
+            if c == "]" || c == "}" { break }
             if c == "," { advance(); continue }
 
             let saved = i
@@ -271,6 +272,9 @@ package struct PythonicCallParser {
                 skipWhitespace()
                 guard let c = peek else { break }
                 if c == "]" { advance(); break }
+                // Foreign closer (`)`/`}`) ends the list — same no-spin
+                // terminator rule as the argument loop.
+                if c == ")" || c == "}" { break }
                 if c == "," { advance(); continue }
                 items.append(parseValue())
             }
@@ -282,6 +286,9 @@ package struct PythonicCallParser {
                 skipWhitespace()
                 guard let c = peek else { break }
                 if c == "}" { advance(); break }
+                // Foreign closer (`)`/`]`) ends the dict — same no-spin
+                // terminator rule as the argument loop.
+                if c == ")" || c == "]" { break }
                 if c == "," { advance(); continue }
                 let key: String?
                 if peek == "\"" || peek == "'" {
@@ -321,7 +328,11 @@ package struct PythonicCallParser {
         return trimmed
     }
 
-    /// Backslash escapes pass through JSON-style; an unterminated string
+    /// Backslash escapes: `\n`/`\t`/`\r` decode to the control character; any
+    /// other escape yields the literal following character (so `\"`, `\\`, `\'`
+    /// work, but `\b`/`\f` become "b"/"f" and `\uXXXX` is NOT decoded — the "u"
+    /// and hex digits survive literally). Full JSON unescaping isn't needed for
+    /// the pythonic argument values the model emits. An unterminated string
     /// (stream truncation) takes the rest of the input.
     private mutating func parseQuotedString() -> String? {
         guard let quote = peek, quote == "\"" || quote == "'" else { return nil }

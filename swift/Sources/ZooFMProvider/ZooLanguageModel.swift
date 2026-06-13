@@ -66,7 +66,10 @@ public struct ZooLanguageModel: LanguageModel {
     /// engine creation.
     ///
     /// - Parameter dialect: tool-calling dialect override; nil probes the
-    ///   tokenizer vocab (`defaultDialect(probing:)`).
+    ///   tokenizer vocab (`defaultDialect(probing:)`). The probe only knows
+    ///   LFM vs Hermes, and falls back to Hermes for everything else — pass an
+    ///   explicit `dialect:` for granite-4.0 / gemma4 bundles (Hermes-
+    ///   incompatible framing) once their dialects exist.
     public init(resourcesAt url: URL, dialect: (any PromptDialect)? = nil) async throws {
         setenv("COREAI_CHUNK_THRESHOLD", "1", 1)
         let bundle = try LanguageBundle(at: url)

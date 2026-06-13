@@ -19,15 +19,17 @@ heads** (GVA: each k/q head is shared across two value heads) and every FFN is a
 **35B parameters, ~3B active per token** → a frontier-quality model that decodes at
 **Mac-class speed** because only 8 of 256 experts fire per token.
 
-**⬇️ Converted `.aimodel` bundle:** `qwen3_6_35b_a3b_decode_int8hu_block32_sym/` (35 GB,
-full LanguageBundle incl. tokenizer; decode-only loop-free for the
-[pipelined engine](../knowledge/pipelined-engine.md)). *HF upload user-gated.*
+**⬇️ Converted `.aimodel` bundle:** `qwen3_6_35b_a3b_decode_sym8_gather/` (35 GB, **the
+`gather_qmm` kernel build — 2.1× faster, same clean int8 quality**; full LanguageBundle incl.
+tokenizer; decode-only loop-free for the [pipelined engine](../knowledge/pipelined-engine.md)).
+Convert with [`conversion/export_qwen3_6_moe_metal_decode_pipelined.py`](../conversion/export_qwen3_6_moe_metal_decode_pipelined.py).
 
 ## Measured (macOS 27 beta, M4 Max 128 GB, release `llm-benchmark`, `COREAI_CHUNK_THRESHOLD=1`)
 
 | config | bundle | prefill tok/s | decode tok/s | numerics (teacher-forced vs bf16 HF oracle) |
 |---|---:|---:|---:|---|
-| **int8 linear per-block-32 + untied absmax int8 head (`int8hu --head-sym`) = SHIP** | **35 GB** | **30.8** | **30.9** | 14/16 — int8 reproduces full-precision argmax at every confident position but one (pos 6, margin 0.31, cos 0.991) |
+| **`sym8` gather kernel (reads 8/256 experts) = SHIP** | **35 GB** | **65.3** | **64.9** | **CLEAN — 0 introduced flips/18 vs fp16** (sym8 = the int8lin recipe via a bit-exact gather) |
+| int8 linear (GatherMM, reads all 256 experts) | 35 GB | 30.8 | 30.9 | 14/16 (1 flip, pos 6 margin 0.31) — same int8 quality, but the dense over-read |
 | fp16 control (4 layers) | 8 GB | 167 | 175 | — (truncated; engine-path smoke) |
 
 **Numerics in full** (the 35B is too large for an fp32 oracle on 128 GB, so the oracle is
@@ -60,13 +62,22 @@ oracle-margin≥0.1 rule):
 - Mac-only: at 35 GB int8 the bundle is far past the iPhone jetsam limit. This is the
   64/128 GB-Mac flagship; a smaller MoE (LFM2-8B-A1B class) is the iPhone-MoE story.
 
-## Speed: an honest accounting (and why it will improve)
+## Speed: the expert-gather 2× is now CLOSED (`gather_qmm` kernel)
 
-30.9 tok/s is real and usable, but it is **~4× slower than MLX 4-bit on the same M4 Max**
-(`mlx-community/Qwen3.6-35B-A3B-4bit`: 125 tok/s, measured). We ship this honestly with
-the gap fully characterized:
+**Update:** the ~2× MoE-expert-gather penalty below is FIXED. A custom
+[`gather_qmm`](../knowledge/compute-units-and-authoring.md) Metal kernel
+(`models/macos/moe_metal.py`) reads only the 8 routed experts (8/256) instead of `GatherMM`'s
+dense all-256 read — **decode 30.9 → 64.9 tok/s (2.1×), and CLEAN** (the `sym8` scheme = the same
+symmetric-linear int8 recipe, read via a bit-exact gather: 0 introduced flips/18 vs fp16). That is
+exactly the "~2× (MoE expert-gather)" term predicted below, now realized. The remaining gap to MLX
+4-bit is the **int8-vs-int4 bytes** term — which is a hard wall here (int4 fails this model's
+numerics, below). The original accounting, for the record:
 
-- The 4× decomposes into **~2× (int8 vs 4-bit bytes)** and **~2× (the MoE expert-gather)**.
+30.9 tok/s (the GatherMM path) is **~4× slower than MLX 4-bit on the same M4 Max**
+(`mlx-community/Qwen3.6-35B-A3B-4bit`: 125 tok/s, measured), characterized as:
+
+- The 4× decomposes into **~2× (int8 vs 4-bit bytes)** and **~2× (the MoE expert-gather)** —
+  the gather 2× is now closed by `gather_qmm` (above).
 - **int4 does not survive this model's numerics.** The attention/GatedDeltaNet body can't
   take 4-bit: full int4 teacher-forced gates **9/16 (symmetric) / 10/16 (asymmetric)** vs
   int8's 14/16 — asymmetric's usual +3-5 dB doesn't transfer to this LLM's mixer. Only a
@@ -79,6 +90,18 @@ the gap fully characterized:
   this is not a porting mistake — it's the maturity of the Core AI GPU MoE path.
 - **Core AI is not generally slow:** on a *dense* model the same pipelined engine is ~2×
   MLX (qwen3-0.6b-4bit: 1,150 tok/s). The gap is specific to the MoE expert-gather.
+- **Direct int8-vs-int4 confirmation (LFM2.5-8B-A1B, the first working Core-AI int4 MoE):**
+  int4 had no usable number here (it fails this model's numerics), so the "~2× bytes" term
+  above was inferred from the MLX-4bit comparison, not measured on Core AI. The smaller
+  LFM2.5-8B-A1B MoE *does* produce a (degraded but running) int4 bundle, and the direct
+  measurement is sharper than expected: **int8 = 39 tok/s** (8.8 GB, 345 GB/s ≈ full-read
+  BW-saturated) vs **int4 = 170 tok/s** (5.0 GB, 848 GB/s effective — above physical BW, so
+  int4 is *not* full-reading). The over-read tax scales **super-linearly** with dtype (~4×,
+  not ~2×): at int8 the `GatherMM` dense read saturates bandwidth, at int4 it doesn't. This
+  reinforces the diagnosis — the bottleneck is the dense over-read, independent of the quant
+  *scheme* (so int8 block/clipping/per-channel tweaks don't move it) — and quantifies the
+  prize the deferred custom `gather_qmm` kernel would capture. (Measured on a validated
+  LFM2.5-8B-A1B MoE port; non-QAT int4 also flips structural tokens, so int8 stays the floor.)
 
 The real fix is a custom Metal gather-matmul kernel (Core AI exposes `TorchMetalKernel` →
 `coreai.metal4_kernel`), but that API is beta-experimental and the integration with the

@@ -34,12 +34,14 @@ on-device, with the conversion code and a knowledge base. Successor to
 | **Gemma 4 E2B** | **30.3** (QAT 30.7) | 6 | **77.0** (QAT 78.9) |
 | **Gemma 4 E4B** (official QAT) | **15.1** | — | **55.8** |
 | **Gemma 4 E2B VL** (image+text, official QAT) | **25.5** | — | **82.4** |
-| **Qwen3.6-35B-A3B** (MoE, 35B/~3B active, Mac-only) | — | — | **30.9** |
+| **Qwen3.6-35B-A3B** (MoE, 35B/~3B active, Mac-only) | — | — | **64.9** † |
 | **Qwen3.6-27B** (dense, Mac-only) | — | — | **15.9** |
 | **GLM-4.7-Flash** (MoE + MLA, 30B/~3B active, Mac-only) | — | — | **20.3** |
 
 Measured on the iOS 27 / macOS 27 beta, Apple's `coreai-pipelined` GPU engine, zero custom
-kernels (ANE column excepted). Prefill, sizes, per-model caveats: [`zoo/`](zoo/).
+kernels (ANE column + **†** excepted). **†** = MoE bundle using the custom
+[`gather_qmm`](knowledge/compute-units-and-authoring.md) Metal kernel (reads only the routed
+experts). Prefill, sizes, per-model caveats: [`zoo/`](zoo/).
 
 - **LFM2.5-8B-A1B** (MoE, 8.3B/~1.5B active) — a 32-expert MoE made practical by a custom
   [`gather_qmm`](knowledge/compute-units-and-authoring.md) Metal kernel that reads only the 4/32
@@ -49,8 +51,10 @@ kernels (ANE column excepted). Prefill, sizes, per-model caveats: [`zoo/`](zoo/)
   fits the iPhone was *validated to run on device* (first MoE on the phone) but **non-QAT int4 is a
   quality wall** (~12 flips/41, two schemes) so it is **not shipped**. Full numbers:
   [`zoo/lfm2.5-8b-a1b-moe.md`](zoo/lfm2.5-8b-a1b-moe.md)
-- **Qwen3.6-35B-A3B** (MoE, 35B/~3B active) — 30.9 tok/s is expert-gather-bound in the
-  current beta; [`zoo/qwen3.6.md`](zoo/qwen3.6.md)
+- **Qwen3.6-35B-A3B** (MoE, 35B/~3B active) — the `gather_qmm` kernel takes decode **30.9 →
+  64.9 tok/s (2.1×) at the SAME clean int8 quality** (0 introduced flips/18 vs fp16), closing the
+  expert-gather half of the old ~4× MLX gap (the rest is int8-vs-int4 bytes, and int4 fails this
+  model's numerics); [`zoo/qwen3.6.md`](zoo/qwen3.6.md)
 - **Qwen3.6-27B** (dense) — the quality pick: int8 output == fp16; dense reads the whole
   model per token, hence slower than the ~3B-active MoE; [`zoo/qwen3.6-27b.md`](zoo/qwen3.6-27b.md)
 - **GLM-4.7-Flash** (MoE + MLA, 30B/~3B active) — the zoo's first Multi-head Latent Attention

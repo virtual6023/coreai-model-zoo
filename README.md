@@ -43,11 +43,12 @@ kernels (ANE column excepted). Prefill, sizes, per-model caveats: [`zoo/`](zoo/)
 
 - **LFM2.5-8B-A1B** (MoE, 8.3B/~1.5B active) — the zoo's first MoE on the **iPhone**, via a
   custom [`gather_qmm`](knowledge/compute-units-and-authoring.md) Metal kernel that reads only the
-  4/32 routed experts (fixes the GatherMM dense over-read): Mac int8 **39 → 141 tok/s (3.6×)**;
-  int4km **4.7 GB runs on iPhone 17 Pro at ~32 tok/s decode**. Kept OUT of the table above — it
-  uses a custom kernel and the expert k-means quant is a *measured* quality tradeoff (fp32-oracle
-  margin gate: int8km +5 / int4km +12 real flips per 41 tokens) — full honest numbers in
-  [`zoo/lfm2.5-8b-a1b-moe.md`](zoo/lfm2.5-8b-a1b-moe.md)
+  4/32 routed experts (fixes the GatherMM dense over-read), **39 → 141 tok/s (3.6×)**. Kept OUT of
+  the table above (custom kernel). Quality, honestly (fp32-oracle margin gate): the **Mac `sym8`
+  (linear int8) bundle is clean** — +1 flip/41, at the fp16 ceiling, AND 3.6× faster. The
+  **iPhone** needs int4 for size and **non-QAT int4 is a quality wall** (~12 flips/41, two schemes
+  confirm) — so the 4.7 GB int4 bundle *runs* on iPhone 17 Pro (~32 tok/s) but is measurably
+  degraded, not a quality ship. Full numbers: [`zoo/lfm2.5-8b-a1b-moe.md`](zoo/lfm2.5-8b-a1b-moe.md)
 - **Qwen3.6-35B-A3B** (MoE, 35B/~3B active) — 30.9 tok/s is expert-gather-bound in the
   current beta; [`zoo/qwen3.6.md`](zoo/qwen3.6.md)
 - **Qwen3.6-27B** (dense) — the quality pick: int8 output == fp16; dense reads the whole

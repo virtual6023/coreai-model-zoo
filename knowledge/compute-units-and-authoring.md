@@ -77,11 +77,15 @@
   decode = the zoo's first iPhone MoE on hardware**. Numerics: kernel == "select-from-all"
   bit-for-bit; composes with the stateful KV+conv decode graph (GPU-only by construction, so the
   old GatherMM→ANE raw-load abort can't occur). **Quality (fp32-oracle margin-rule gate, 41-tok
-  paragraph): the kernel is bit-exact — the EXPERT k-means quant introduces ~5 real flips/41 for
-  int8km (moderate, ≤1.2 margin) and ~12/41 for int4km (margins to 7.8 → clearly degraded); NOT
-  "fp16-faithful" (an earlier greedy "token-identical" read held only on a degenerate loop-y
-  prompt). Cleaner affine/linear-int8 expert kernel = follow-up.** `llm-benchmark` drives the
-  bundle; `llm-runner`'s gen path hard-asserts on the 3-state (KV+conv) layout (CLI limit).
+  paragraph; kernel bit-exact, so the quant SCHEME is the lever): `sym8` (symmetric-LINEAR int8,
+  per-K-block-32 scale = the shipped int8-linear recipe) = CLEAN, +1 flip/41 at the fp16 ceiling AND
+  same 140 tok/s → the Mac ship (quality AND speed). k-means int8 = +5 (lossier — don't use). int4
+  is a WALL: two 4-bit schemes (k-means +12, affine-block-32 +11) both ~12 flips/41 with large
+  margins → non-QAT int4 can't reach clean (needs QAT weights). So int8 → use `sym8` not k-means;
+  int4 = compact/runs-on-iPhone but degraded. (An earlier "fp16-faithful" claim was WRONG — held
+  only on a degenerate loop-y prompt; the gather kernel's QUALITY is set by the expert quant
+  scheme, not the gather.)** `llm-benchmark` drives the bundle; `llm-runner`'s gen path hard-asserts
+  on the 3-state (KV+conv) layout (CLI limit).
 - **Memory-efficient load** (7B+): meta-device init + `load_state_dict(assign=True)` + per-layer streaming. `gpu_rules.md:279-297`.
 
 ## macOS vs iOS export (the official split)

@@ -126,14 +126,16 @@ def save_tokenizer(hf_id: str, out_dir: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("mode", nargs="?", default="int8km", choices=["int8km", "int4km"])
+    ap.add_argument("mode", nargs="?", default="sym8", choices=["sym8", "int8km", "int4km"])
     ap.add_argument("--hf-id", default="LiquidAI/LFM2.5-8B-A1B")
     ap.add_argument("--out-dir", default="exports")
     ap.add_argument("--max-ctx", type=int, default=8192)
     ap.add_argument("--no-quant-mmap", action="store_true")
     args = ap.parse_args()
 
-    nbits = 8 if args.mode == "int8km" else 4
+    # sym8 = clean symmetric-linear int8 experts (matches the shipped int8lin quality, fp32-oracle
+    # margin gate); km8/km4 = k-means (km4 = the iPhone-jetsam-safe compact bundle).
+    scheme = {"sym8": "sym8", "int8km": "km8", "int4km": "km4"}[args.mode]
     short = args.hf_id.rsplit("/", 1)[-1].lower().replace(".", "_").replace("-", "_")
     name = f"{short}_decode_{args.mode}_gather"
 
@@ -186,7 +188,7 @@ def main() -> None:
     # 2) metalize the MoE: SwitchGLU -> MetalSwitchGLU (gather_qmm; reads only routed experts)
     print(f"metalizing MoE experts -> gather_qmm {args.mode} (reads only top-{cfg.num_experts_per_tok}/"
           f"{cfg.num_experts}) ...", flush=True)
-    kernel = metalize_moe(model, nbits=nbits)
+    kernel = metalize_moe(model, scheme=scheme)
 
     # 3) export with the custom kernel; drop gather_mm + gated_delta_update externalize specs
     specs = [s for s in _EXTERNALIZE_SPECS

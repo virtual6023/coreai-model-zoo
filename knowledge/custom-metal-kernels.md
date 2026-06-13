@@ -101,6 +101,17 @@ conv.to_coreai().optimize()
 - **`template_dtypes`**: `{"A":"TYPE"}` replaces the placeholder string `"TYPE"` in `src` with input A's Metal dtype at compile time → one kernel serves multiple dtypes. Keys must be real inputs; placeholders must be unique (`metal.py:152-177`).
 - **`torch_defn` validation**: every param annotated `Tensor|int|float|bool`, no `*args/**kwargs`, param count == `len(input_names)`, return `Tensor | list[Tensor] | tuple[Tensor,...]` with concrete length matching `result_names` (`_torch_metal_kernel.py:141-211`).
 - Kernels are pure functions — no shared state / no execution-order dependence.
+- **Rank-3 buffer indexing + a DATA-DEPENDENT gather both lower + run on the GPU** (probe
+  `ondevice/_moe_kernel_probe.py`). So a kernel can take an index tensor as an INPUT and read only
+  the rows it points at — `W[m, n, e]` with `e = uint(IDX[slot])` reads only expert-slab `e` out of
+  a `[E, N, M]` tensor (the `gather_qmm` MoE kernel, `models/macos/moe_metal.py` → the deferred
+  MoE-over-read fix; LFM2.5-8B-A1B int8 39→141 tok/s). The `torch_defn` must stay fake-traceable:
+  express the gather as `torch.index_select(W, 0, idx)` (shape-static), NEVER `int(idx[i])`
+  (FakeTensor has no concrete value). Same kernel runs on M4 Max AND the iPhone 17 Pro A19 Pro GPU.
+- **Per-slot vs shared activation in MoE.** Gate/up share the token `x` across the routed experts,
+  but the **down projection feeds each expert its OWN gated activation** — so the kernel's `A` must
+  be `[k, K]` (one row per slot, `A[c, slot]`), with `x` replicated k-wide for gate/up. Treating `A`
+  as a single shared `[1, K]` row silently corrupts down (relative error ~1.3 = garbage).
 
 ## Performance patterns (WWDC 325 + gpu_rules.md + this project's measured results)
 - **The win is killing dispatch overhead via fusion.** Per-op kernelization of small ops does NOT help — measured here: kernelizing attention q/k/v/o was *slower*; any single op-class ≤1.3 ms. The real lever is collapsing ~28 ops/layer into 1–3 mega-kernels (whole-layer fusion). (Detail: `project_macos_speed_state` project memory + `ondevice/_macos_speed_RESULTS.md`.)

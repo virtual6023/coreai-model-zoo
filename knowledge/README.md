@@ -54,6 +54,11 @@ Hard-won, verified notes on Apple's Core AI (iOS/macOS 27) — what the docs don
   doesn't show. The body-purity rule, switch re-prefill cost, two-resident-model footprint, and
   why the model-decision channel must be guided-gen (not a tool) on the stock engine. Example:
   `agent-demos/DualProfileChat`.
+- [`visual-intelligence-third-party-model.md`](visual-intelligence-third-party-model.md) — running
+  YOUR own model (CLIP / RF-DETR) behind the system **Visual Intelligence** camera/screenshot search
+  (WWDC26 297): `IntentValueQuery` + `SemanticContentDescriptor`, model-agnostic by construction (no
+  model param, no capability, no entitlement), and the real gate — running a model in the query's
+  background-launch memory budget. Example: `coreai-kit/Examples/VisualIntel`.
 - [`agentic-security-checklist.md`](agentic-security-checklist.md) — pre-ship checklist for
   on-device LLM agent apps (WWDC 347+343): indirect prompt injection, the Lethal Trifecta,
   `.onToolCall`/`.historyTransform` guardrails, App-Intents risk-based confirmation +

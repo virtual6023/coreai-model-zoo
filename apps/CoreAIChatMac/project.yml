@@ -26,6 +26,7 @@ targets:
     deploymentTarget: "27.0"
     sources:
       - path: Sources
+      - path: ../AppShared/ModelDownloader.swift
     dependencies:
       - package: coreai-models
         product: CoreAILM
@@ -40,6 +41,8 @@ targets:
         GENERATE_INFOPLIST_FILE: "YES"
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         INFOPLIST_KEY_NSMainStoryboardFile: ""
+        # Direct (non-App-Store) distribution: no sandbox (full disk access for tens-of-GB
+        # local bundles), hardened runtime ON (required to notarize).
         ENABLE_APP_SANDBOX: "NO"
-        ENABLE_HARDENED_RUNTIME: "NO"
+        ENABLE_HARDENED_RUNTIME: "YES"
         SWIFT_APPROACHABLE_CONCURRENCY: "YES"

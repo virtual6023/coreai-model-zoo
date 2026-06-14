@@ -12,7 +12,7 @@ packages:
     from: "1.3.3"
 settings:
   base:
-    # DEVELOPMENT_TEAM: <your-team-id>   (or pick a team in Xcode's Signing pane)
+    DEVELOPMENT_TEAM: MFN25KNUGJ
     SWIFT_VERSION: "6.0"
 targets:
   CoreAIChat:
@@ -24,6 +24,7 @@ targets:
       - path: Resources/tokenizer
         type: folder
         buildPhase: resources
+      - path: Assets.xcassets
     dependencies:
       - package: coreai-models
         product: CoreAIShared
@@ -35,8 +36,13 @@ targets:
         product: Tokenizers
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.CoreAIChat
+        PRODUCT_BUNDLE_IDENTIFIER: com.daisukemajima.CoreAIChat
         CODE_SIGN_STYLE: Automatic
+        # App Store Connect would otherwise prompt for export-compliance on every build.
+        # The app only uses HTTPS (Hugging Face downloads) — exempt.
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_KEY_CFBundleIconName: AppIcon
         CODE_SIGN_ENTITLEMENTS: CoreAIChat.entitlements
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES

@@ -5,6 +5,7 @@ struct ChatView: View {
     @StateObject private var engine = ChatEngine()
     @AppStorage("modelsFolder") private var modelsFolderPath = ""
     @State private var draft = ""
+    @State private var showingDownloads = false
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -25,9 +26,10 @@ struct ChatView: View {
             if let folder = ProcessInfo.processInfo.environment["CHATMAC_FOLDER"] {
                 modelsFolderPath = folder
             }
-            if !modelsFolderPath.isEmpty {
-                engine.scanFolder(URL(fileURLWithPath: modelsFolderPath))
+            if modelsFolderPath.isEmpty {
+                modelsFolderPath = ChatEngine.appModelsDir.path
             }
+            engine.scanFolder(URL(fileURLWithPath: modelsFolderPath))
             if let autoModel = ProcessInfo.processInfo.environment["CHATMAC_MODEL"],
                 let entry = engine.models.first(where: { $0.name == autoModel }) {
                 engine.load(entry)
@@ -86,14 +88,24 @@ struct ChatView: View {
 
             Divider()
             Button {
+                showingDownloads = true
+            } label: {
+                Label("Download Models…", systemImage: "arrow.down.circle")
+                    .frame(maxWidth: .infinity)
+            }
+            .padding(.horizontal, 8).padding(.top, 8)
+            Button {
                 pickFolder()
             } label: {
                 Label("Choose Models Folder…", systemImage: "folder")
                     .frame(maxWidth: .infinity)
             }
-            .padding(8)
+            .padding(.horizontal, 8).padding(.bottom, 8)
         }
         .navigationSplitViewColumnWidth(min: 220, ideal: 260)
+        .sheet(isPresented: $showingDownloads) {
+            DownloadsView(engine: engine)
+        }
     }
 
     private func pickFolder() {

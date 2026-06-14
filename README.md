@@ -4,29 +4,6 @@ LLMs converted to Apple **Core AI** (`.aimodel`, iOS 27 / macOS 27) — download
 on-device, with the conversion code and a knowledge base. Successor to
 [`CoreML-Models`](https://github.com/john-rocky/CoreML-Models).
 
-## Quickstart — run a model in ~10 min
-
-> **Prerequisite:** an **iOS 27 / macOS 27 beta** device. These bundles target Apple's Core AI
-> runtime (`.aimodel`), which ships only in the beta SDKs — there is no stable-OS path yet.
-
-**iPhone — no build, fastest.** Install **CoreAIChat** from TestFlight, then on first launch pick a
-model and tap **Download** — weights stream from Hugging Face into the app (nothing is bundled in
-the `.app`), and you're chatting on-device. Start with **Qwen3.5-0.8B** (~970 MB int8), the smallest.
-
-> 📲 **[Install CoreAIChat (TestFlight)](#)** &nbsp;<!-- TODO: paste the public invite link after the first upload -->
-
-**Mac — download the app, no build.** Get the notarized **CoreAI Zoo for Mac** app, open it, and
-pick a model to download in-app — these are the *large* Mac-only bundles (Qwen3.6-35B-A3B,
-GLM-4.7-Flash, Gemma 4 31B, …) that don't fit on a phone.
-
-> 🖥 **[Download CoreAI Zoo for Mac (.dmg)](https://github.com/john-rocky/coreai-model-zoo/releases/download/mac-v1.0/CoreAI-Zoo-for-Mac.dmg)** (notarized, macOS 27)
-
-**From source — for developers.** Build the app or the `zoo-fm-gate` CLI yourself. This needs
-the Xcode 27 beta, a one-time clone of [`apple/coreai-models`](https://github.com/apple/coreai-models)
-at the repo root, and the patch stack — full steps in [`apps/`](apps/) (app) or [`swift/`](swift/)
-(`swift run -c release zoo-fm-gate <bundle-dir> chat`). Download a bundle first with
-`huggingface-cli download mlboydaisuke/qwen3.5-0.8B-CoreAI`.
-
 ## Models
 
 | Model | Download (`.aimodel`) | License |
@@ -110,6 +87,16 @@ kernel — the stock MPSGraph SDPA crashes on the ≥16-head × 512 Q (a GPU scr
   <img width="380" alt="CoreAIChat screen recording" src="https://github.com/user-attachments/assets/999dbd95-45b5-468f-b1a8-34112ee3b74d" />
 </p>
 <p align="center"><i>CoreAIChat (<a href="apps/">apps/</a>) — the zoo's models running on-device on iPhone.</i></p>
+
+## Get the app
+
+No build — pick a model and it downloads in-app. Needs an **iOS 27 / macOS 27 beta** device
+(these `.aimodel` bundles ship only in the beta SDKs).
+
+- **Mac** → [**Download CoreAI Zoo for Mac (.dmg)**](https://github.com/john-rocky/coreai-model-zoo/releases/download/mac-v1.0/CoreAI-Zoo-for-Mac.dmg) (notarized). Open it and pick a model — it pulls the large Mac-only bundles (Qwen3.6-35B-A3B, GLM-4.7-Flash, Gemma 4 31B, …).
+- **iPhone** → CoreAIChat on TestFlight — **coming soon**. Gemma 4 E2B / Qwen3.5 / LFM2.5 / Granite on-device.
+
+Building from source instead? See [`apps/`](apps/) or the [`swift/`](swift/) `zoo-fm-gate <bundle-dir> chat` CLI; grab a bundle with `huggingface-cli download mlboydaisuke/qwen3.5-0.8B-CoreAI`.
 
 ## Repository layout
 

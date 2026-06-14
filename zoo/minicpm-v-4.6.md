@@ -18,6 +18,11 @@ qwen3.6 hybrid); only the SigLIP tower + mergers were authored fresh.
 `gpu-pipelined/minicpmv46_vlm_decode_int8lin/` (VLM text decoder, int8, ship config) +
 `gpu-pipelined/minicpmv46_vision/` (fixed-grid SigLIP vision encoder, fp16). Apache-2.0.
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/c4baa524-5217-4bb3-a23f-b0acd6249bd4" width="300" alt="MiniCPM-V 4.6 on iPhone — a fridge photo becomes recipe ideas, fully on-device in CoreAIChat">
+</p>
+<p align="center"><em>Fridge photo → recipe ideas, fully on-device on an iPhone 17 Pro (CoreAIChat).</em></p>
+
 ## How a VLM rides a text-only engine
 
 The pipelined engine knows nothing about images. The whole multimodal state rides the

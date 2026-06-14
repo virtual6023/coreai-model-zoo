@@ -14,6 +14,7 @@ throughput.
 | [`granite-4.0-h.md`](granite-4.0-h.md) | Granite 4.0-H (Mamba2 + attn hybrid, IBM) | [🤗 granite-4.0-h-CoreAI](https://huggingface.co/mlboydaisuke/granite-4.0-h-CoreAI) | 1b + 350m, oracle gate 16/16, **136.5 tok/s M4 Max / 35.4–37.1 iPhone 17 Pro (int8 head)** (pipelined, first SSM-scan rider) |
 | [`rf-detr.md`](rf-detr.md) | RF-DETR + RF-DETR-Seg (detection / instance segmentation, Roboflow) | [🤗 RF-DETR-CoreAI](https://huggingface.co/mlboydaisuke/RF-DETR-CoreAI) | det ×4 + seg ×6 fp32, gated cpu+gpu (mask IoU 1.000), **8.6–59.1 ms/frame M4 Max GPU** |
 | [`qwen3-embedding.md`](qwen3-embedding.md) | Qwen3-Embedding (multilingual text embedder, last-token pooling + MRL, Alibaba) | [🤗 Qwen3-Embedding-0.6B-CoreAI](https://huggingface.co/mlboydaisuke/Qwen3-Embedding-0.6B-CoreAI) | 0.6B fp16, torch ladder exact + engine gate cos 0.999998, **25–45 ms/embedding M4 Max GPU** |
+| [`qwen3-reranker.md`](qwen3-reranker.md) | Qwen3-Reranker (cross-encoder reranker, yes/no logit score, Alibaba) | [🤗 Qwen3-Reranker-0.6B-CoreAI](https://huggingface.co/mlboydaisuke/Qwen3-Reranker-0.6B-CoreAI) | 0.6B fp16, torch ladder exact (P(yes) Δ=0) + engine gate Δ<5e-4, **45.7 ms/score M4 Max GPU** |
 
 ## The matrix (every meaningful platform × compute-unit cell, greedy, top-1 vs HF)
 

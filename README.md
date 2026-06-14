@@ -60,15 +60,16 @@ kernel — the stock MPSGraph SDPA crashes on the ≥16-head × 512 Q (a GPU scr
 </p>
 <p align="center"><i>CoreAIChat (<a href="apps/">apps/</a>) — the zoo's models running on-device on iPhone.</i></p>
 
-## Get the app
+## Start here
 
-No build — pick a model and it downloads in-app. Needs an **iOS 27 / macOS 27 beta** device
-(these `.aimodel` bundles ship only in the beta SDKs).
-
-- **Mac** → [**Download CoreAI Zoo for Mac (.dmg)**](https://github.com/john-rocky/coreai-model-zoo/releases/download/mac-v1.0/CoreAI-Zoo-for-Mac.dmg) (notarized). Open it and pick a model — it pulls the large Mac-only bundles (Qwen3.6-35B-A3B, GLM-4.7-Flash, Gemma 4 31B, …).
-- **iPhone** → CoreAIChat on TestFlight — **coming soon**. Gemma 4 E2B / Qwen3.5 / LFM2.5 / Granite on-device.
-
-Building from source instead? See [`apps/`](apps/) or the [`swift/`](swift/) `zoo-fm-gate <bundle-dir> chat` CLI; grab a bundle with `huggingface-cli download mlboydaisuke/qwen3.5-0.8B-CoreAI`.
+- **Try the app** (iOS 27 / macOS 27 beta; the model downloads in-app):
+  - **Demo app, no build** → Mac: [**.dmg**](https://github.com/john-rocky/coreai-model-zoo/releases/download/mac-v1.0/CoreAI-Zoo-for-Mac.dmg) (notarized, runs the Mac-only bundles) · iPhone: CoreAIChat on TestFlight (coming soon)
+  - **Build it** → [`apps/`](apps/) — Xcode 27 beta + xcodegen, the `coreai-models` patch stack + `tokenizer.json`
+- **Run a model in your own app** → [`knowledge/swift-runtime.md`](knowledge/swift-runtime.md) + the model card
+- **Convert a model** → [`knowledge/conversion-guide.md`](knowledge/conversion-guide.md)
+- **Compress** → [`knowledge/compression.md`](knowledge/compression.md)
+- **Make it fast** → [`knowledge/custom-metal-kernels.md`](knowledge/custom-metal-kernels.md) · [`knowledge/performance-ceiling.md`](knowledge/performance-ceiling.md)
+- **Known beta issue** (in-graph KV-write crash; workarounds + the input-mask escape) → [`knowledge/coreai-beta-mpsgraph-kvwrite-bug.md`](knowledge/coreai-beta-mpsgraph-kvwrite-bug.md) — FB23024751 / [apple/coreai-models#5](https://github.com/apple/coreai-models/issues/5)
 
 ## Repository layout
 
@@ -79,14 +80,6 @@ Building from source instead? See [`apps/`](apps/) or the [`swift/`](swift/) `zo
 | [`conversion/`](conversion/) | Re-authored models + convert / verify / compress scripts (PyTorch → `.aimodel`). |
 | [`swift/`](swift/) | `CoreAIRunner` — a Swift package that drives `.aimodel` LLM bundles, including architectures beyond the standard runtime. |
 | [`apps/`](apps/) | SwiftUI on-device chat apps (iOS 27): CoreAIChat (Gemma 4 E2B GPU/ANE/⚡ + Qwen3.5 / Qwen3.5-2B / LFM2.5 / Granite ⚡pipelined, one picker) + QwenChatFast (Qwen3.5 static kernels) with in-app model download. |
-
-## Start here
-
-- **Run a model on device** → [`knowledge/swift-runtime.md`](knowledge/swift-runtime.md) + the model card
-- **Convert a model** → [`knowledge/conversion-guide.md`](knowledge/conversion-guide.md)
-- **Compress** → [`knowledge/compression.md`](knowledge/compression.md)
-- **Make it fast** → [`knowledge/custom-metal-kernels.md`](knowledge/custom-metal-kernels.md) · [`knowledge/performance-ceiling.md`](knowledge/performance-ceiling.md)
-- **Known beta issue** (in-graph KV-write crash; workarounds + the input-mask escape) → [`knowledge/coreai-beta-mpsgraph-kvwrite-bug.md`](knowledge/coreai-beta-mpsgraph-kvwrite-bug.md) — FB23024751 / [apple/coreai-models#5](https://github.com/apple/coreai-models/issues/5)
 
 ## License
 

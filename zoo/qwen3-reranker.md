@@ -63,6 +63,23 @@ prompt scaffolding) + `tokenizer/`. Apache-2.0.
 Convert yourself: [`conversion/export_qwen3_reranker.py`](../conversion/export_qwen3_reranker.py)
 (`uv run conversion/export_qwen3_reranker.py --dtype float16 --seq-len 512 --output-dir out`).
 
+## CoreAIKit (Swift)
+
+Runs out of the box with [CoreAIKit](https://github.com/john-rocky/coreai-kit) — it downloads this
+repo on first use and formats the pair (prefix + instruct/query/document + suffix) in-process:
+
+```swift
+import CoreAIKitEmbeddings
+
+let reranker = try await Reranker(model: .qwen3Reranker0_6B)
+let ranked = try await reranker.rerank(
+    query: "What is the capital of Japan?",
+    documents: ["Tokyo is the capital of Japan.", "Python is a programming language."])
+// ranked[0].document is most relevant; ranked[i].score is P(yes) in [0, 1]
+```
+
+Pair it with `TextEmbedder(model: .qwen3Embedding0_6B)` for the full retrieve→rerank stack.
+
 ## The port in one lesson: a cross-encoder is an LM head on one token
 
 The reranker is a causal LM scored, not generated: read the next-token logits at the last real

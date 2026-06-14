@@ -71,6 +71,20 @@ reference embeddings + cosines for the parity test) + `tokenizer/`. Apache-2.0.
 Convert yourself: [`conversion/export_qwen3_embedding.py`](../conversion/export_qwen3_embedding.py)
 (`uv run conversion/export_qwen3_embedding.py --dtype float16 --seq-len 512 --output-dir out`).
 
+## CoreAIKit (Swift)
+
+Runs out of the box with [CoreAIKit](https://github.com/john-rocky/coreai-kit) — it downloads this
+repo on first use and applies the query/document prompts in-process:
+
+```swift
+import CoreAIKitEmbeddings
+
+let embedder = try await TextEmbedder(model: .qwen3Embedding0_6B, prompts: .qwen3Embedding)
+let query = try await embedder.embed(query: "What is the capital of Japan?")
+let doc   = try await embedder.embed(document: "Tokyo is the capital and largest city of Japan.")
+let score = TextEmbedder.cosineSimilarity(query, doc)   // unit vectors → dot product = cosine
+```
+
 ## The port in one lesson: an encoder, and two dtype traps
 
 1. **No generate engine.** Pooling (last-token) + L2-normalize live *in the graph*, so the host

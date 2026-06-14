@@ -37,6 +37,7 @@ on-device, with the conversion code and a knowledge base. Successor to
 | **Gemma 4 E2B** | **30.3** (QAT 30.7) | 6 | **77.0** (QAT 78.9) |
 | **Gemma 4 E4B** (official QAT) | **15.1** | — | **55.8** |
 | **Gemma 4 E2B VL** (image+text, official QAT) | **25.5** | — | **82.4** |
+| **MiniCPM-V 4.6** (vision-language, sub-2B) | **53.4** | — | **224.3** |
 | **Qwen3.6-35B-A3B** (MoE, 35B/~3B active, Mac-only) | — | — | **64.9** † |
 | **Qwen3.6-27B** (dense, Mac-only) | — | — | **15.9** |
 | **GLM-4.7-Flash** (MoE + MLA, 30B/~3B active, Mac-only) | — | — | **52.4** † |

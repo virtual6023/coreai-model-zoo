@@ -46,6 +46,7 @@ tower is a separate plain `.aimodel` with ALL positional work (bucketized pos-em
 |---|---:|---|---:|---:|---|
 | VLM int8 (image) | ~1.0 GB | iPhone 17 Pro | 52.3 | **51.5** | image→answer; engine reply == HF description (one int8 near-tie, reconverges) |
 | text core int8 | ~1.0 GB | iPhone 17 Pro | 53.3 | **53.4** | **nat 24/24 + oracle 24/24** (engine ≡ python ≡ HF) |
+| text core int8 | ~1.0 GB | M4 Max | 225.1 | **224.3** | `llm-benchmark` p128 g256 n3 (qwen3.5-0.8B class; VLM bundle decodes ~the same — llm-benchmark can't feed the image buffer so the text core is the Mac proxy) |
 | vision encoder fp16 | ~1.0 GB | Mac | — | per-image (one-shot) | per-token cos **1.000000** vs fp32-HF |
 
 - **Gated end-to-end**: fp32-torch ladder EXACT (vision image_features cos 1.000000; full overlay

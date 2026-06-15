@@ -21,6 +21,19 @@ greedy. Full tables (prefill, load times, memory, iPhone 17 Pro, MLX comparison)
 [`knowledge/apple-models-bench.md`](../knowledge/apple-models-bench.md) · raw data:
 [apple-silicon-llm-bench](https://github.com/john-rocky/apple-silicon-llm-bench).
 
+## Image generation
+
+Diffusion bundles from Apple's official `coreai.diffusion.export` recipe, on the stock
+`CoreAIDiffusionPipeline` runtime — **no model-code port** (image generation is already
+supported by the Apple stack).
+
+| Model | Bundles | M4 Max @ 4 steps | Download |
+|---|---|---:|---|
+| FLUX.2 klein 4B (text→image) | macOS 1024 · iOS 512/half — int4-per-block, ~4 GB | 1024 ≈ 17.4 s · 512 ≈ 6.55 s | [HF](https://huggingface.co/mlboydaisuke/FLUX.2-klein-4B-CoreAI) |
+
+4-step distilled (guidance 1.0, discrete-flow scheduler). Run it from the
+[CoreAIImageGen app](../apps/CoreAIImageGen/) (iOS + macOS) or the `diffusion-runner` CLI.
+
 ## Why artifacts and not just recipes?
 
 The same export command can produce a 2.2× slower artifact across an OS upgrade
@@ -32,9 +45,11 @@ current toolchains can no longer reproduce.
 
 ## Run them
 
-- CLI: `swift run -c release llm-runner --model <bundle-dir> --prompt "Hello"`
-- Chat app: [coreai-samples / CoreAIChatMac](https://github.com/john-rocky/coreai-samples)
+- CLI (LLM): `swift run -c release llm-runner --model <bundle-dir> --prompt "Hello"`
+- CLI (diffusion): `swift run -c release diffusion-runner --model <bundle-dir> --prompt "a cat"`
+- Apps: [CoreAIChatMac](https://github.com/john-rocky/coreai-samples) (chat) ·
+  [`apps/CoreAIImageGen`](../apps/CoreAIImageGen/) (image generation, iOS + macOS)
 - iOS bundles need AOT compilation first — see each model card.
 
 Licenses: bundles inherit their upstream model licenses (Apache-2.0 for Qwen /
-Mistral / gpt-oss; Gemma Terms of Use for Gemma — see the cards).
+Mistral / gpt-oss / FLUX.2 klein; Gemma Terms of Use for Gemma — see the cards).

@@ -1,7 +1,7 @@
-# On-device Core AI chat apps (iOS 27)
+# On-device Core AI sample apps (iOS 27 / macOS 27)
 
-SwiftUI sample apps that run LLMs **on device** via Core AI, verified greedy-exact (top-1 vs the
-HF eager reference) on an iPhone 17 Pro running the iOS 27 beta:
+SwiftUI sample apps that run models **on device** via Core AI. The chat apps are verified
+greedy-exact (top-1 vs the HF eager reference) on an iPhone 17 Pro running the iOS 27 beta:
 
 | App | Model | Decode (iPhone 17 Pro) |
 |---|---|---|
@@ -10,6 +10,17 @@ HF eager reference) on an iPhone 17 Pro running the iOS 27 beta:
 
 Measured numbers, bundle sizes, and per-config caveats live in the zoo cards:
 [`zoo/gemma4-e2b.md`](../zoo/gemma4-e2b.md) · [`zoo/qwen3.5.md`](../zoo/qwen3.5.md).
+
+### Image generation
+
+| App | Model | Image @ 4 steps |
+|---|---|---|
+| [`CoreAIImageGen/`](CoreAIImageGen/) | **FLUX.2 klein 4B** (text→image; iOS + macOS, one codebase) — [HF bundle](https://huggingface.co/mlboydaisuke/FLUX.2-klein-4B-CoreAI) | macOS 1024 ≈ 17.4 s · iOS 512/half ≈ 6.55 s |
+
+Runs on Apple's stock `CoreAIDiffusionPipeline` — **no model-code port**; any
+`coreai.diffusion.export` bundle (FLUX.2 / SD3 / SD) drops in. It needs **no `coreai-models`
+patch stack** (the diffusion runtime is unmodified), so its build is self-contained — see
+[`CoreAIImageGen/README.md`](CoreAIImageGen/).
 
 ## Model delivery
 

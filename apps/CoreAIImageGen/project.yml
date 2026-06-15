@@ -1,0 +1,88 @@
+name: CoreAIImageGen
+options:
+  bundleIdPrefix: com.coreai
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "27.0"
+    iOS: "27.0"
+
+packages:
+  # The diffusion runtime needs apple/coreai-models `main` (the metadata.json v0.2 bundle
+  # format — the repo-root clone the LLM apps patch against is pinned older and only
+  # understands the legacy pipeline.json). This app pulls the package straight from GitHub,
+  # pinned to the revision the shipped build was verified against, and applies NO patch
+  # stack: the CoreAIDiffusionPipeline runtime runs unmodified.
+  coreai-models:
+    url: https://github.com/apple/coreai-models
+    revision: 02a8eddefbbb0754d6752f6f3a8bdf2fae2e85b3
+
+schemes:
+  CoreAIImageGen:
+    build:
+      targets:
+        CoreAIImageGen: all
+    run:
+      config: Release
+  CoreAIImageGenMac:
+    build:
+      targets:
+        CoreAIImageGenMac: all
+    run:
+      config: Release
+
+targets:
+  # iOS — runs the lighter 512 / half bundle (~4 GB int4).
+  CoreAIImageGen:
+    type: application
+    platform: iOS
+    deploymentTarget: "27.0"
+    sources:
+      - path: Sources
+      - path: ../AppShared/ModelDownloader.swift
+    # The ~4 GB int4 bundle needs the increased-memory-limit entitlement to avoid jetsam
+    # on load (12 GB devices, e.g. iPhone 17 Pro).
+    entitlements:
+      path: CoreAIImageGen.entitlements
+      properties:
+        com.apple.developer.kernel.increased-memory-limit: true
+    dependencies:
+      - package: coreai-models
+        product: CoreAIDiffusion
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.coreai.imagegen.ios
+        DEVELOPMENT_TEAM: MFN25KNUGJ
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "6.0"
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        # Only HTTPS (Hugging Face downloads) — exempt from export-compliance prompts.
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: "NO"
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_APPROACHABLE_CONCURRENCY: "YES"
+
+  # macOS — runs the full 1024 bundle.
+  CoreAIImageGenMac:
+    type: application
+    platform: macOS
+    deploymentTarget: "27.0"
+    sources:
+      - path: Sources
+      - path: ../AppShared/ModelDownloader.swift
+    dependencies:
+      - package: coreai-models
+        product: CoreAIDiffusion
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.coreai.imagegenmac
+        DEVELOPMENT_TEAM: MFN25KNUGJ
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "6.0"
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: "YES"
+        ENABLE_APP_SANDBOX: "NO"
+        ENABLE_HARDENED_RUNTIME: "NO"
+        SWIFT_APPROACHABLE_CONCURRENCY: "YES"

@@ -28,4 +28,5 @@ __pycache__/
 # upstream model repos (see apps/CoreAIChat/README.md)
 apps/**/*.xcodeproj/
 apps/**/build/
+apps/**/build-*/
 apps/**/tokenizer.json

@@ -152,39 +152,110 @@ final class Gemma4ChatEngine: ObservableObject {
     // needs. Empty == everything is on disk. The gemma tokenizer ships in the app bundle (qwen's
     // is inside its bundle), and the env overrides (GEMMA_MONO_MODEL/HEAD, GEMMA_QUANT) are dev
     // paths not covered here.
-    func missingDownloads() -> [ModelDownloader.Item] {
-        var paths: [(remote: String, local: String)]
+    // Every (repo subpath -> name under Documents/models) artifact a mode needs, present or not.
+    private func modelPaths(for mode: GemmaMode) -> [(remote: String, local: String)] {
         switch mode {
         case .qwen, .qwen2b, .lfm2, .granite:
             let spec = mode.pipelinedSpec!
-            paths = [(spec.hfRemotePath, spec.bundleName)]
+            return [(spec.hfRemotePath, spec.bundleName)]
         case .qwen3vl:
-            paths = [(Qwen3VLBackend.hfDecoderPath, Qwen3VLBackend.decoderBundle),
-                     (Qwen3VLBackend.hfVisionPath, Qwen3VLBackend.visionDir)]
+            return [(Qwen3VLBackend.hfDecoderPath, Qwen3VLBackend.decoderBundle),
+                    (Qwen3VLBackend.hfVisionPath, Qwen3VLBackend.visionDir)]
         case .gemma4vl:
             // decoder (provider aotc) + vision tower + the QAT PLE table set
-            paths = [(Gemma4VLBackend.hfDecoderPath, Gemma4VLBackend.decoderBundle),
-                     (Gemma4VLBackend.hfVisionPath, Gemma4VLBackend.visionDir),
-                     (Gemma4VLBackend.hfTablesPath, Gemma4VLBackend.tablesDir)]
+            return [(Gemma4VLBackend.hfDecoderPath, Gemma4VLBackend.decoderBundle),
+                    (Gemma4VLBackend.hfVisionPath, Gemma4VLBackend.visionDir),
+                    (Gemma4VLBackend.hfTablesPath, Gemma4VLBackend.tablesDir)]
         case .gemmaTbl:
             // AOT engine bundle + the PLE table set the GPU/ANE modes already share.
             let spec = mode.pipelinedSpec!
-            paths = [(spec.hfRemotePath, spec.bundleName),
-                     ("ios-frontend/gemma4_gather_raw", "gemma4_gather_raw")]
+            return [(spec.hfRemotePath, spec.bundleName),
+                    ("ios-frontend/gemma4_gather_raw", "gemma4_gather_raw")]
         case .gpu:
-            paths = [("ios-frontend/gemma4_gather_raw", "gemma4_gather_raw"),
-                     ("ios-gpu/gemma4_e2b_metal_int4km_L35.aimodel", "gemma4_e2b_metal_int4km_L35.aimodel"),
-                     ("ios-gpu/gemma4_e2b_head_argmax_int4km.aimodel", "gemma4_e2b_head_argmax_int4km.aimodel")]
+            return [("ios-frontend/gemma4_gather_raw", "gemma4_gather_raw"),
+                    ("ios-gpu/gemma4_e2b_metal_int4km_L35.aimodel", "gemma4_e2b_metal_int4km_L35.aimodel"),
+                    ("ios-gpu/gemma4_e2b_head_argmax_int4km.aimodel", "gemma4_e2b_head_argmax_int4km.aimodel")]
         case .ane:
-            paths = [("ios-frontend/gemma4_gather_raw", "gemma4_gather_raw")]
+            var paths: [(remote: String, local: String)] =
+                [("ios-frontend/gemma4_gather_raw", "gemma4_gather_raw")]
             paths += (1...6).map { ("ios-ane/gemma4_e2b_hostcache_chunk\($0)_int8.aimodel",
                                     "gemma4_e2b_hostcache_chunk\($0)_int8.aimodel") }
             paths += [("ios-ane/gemma4_e2b_head_argmax_int8.aimodel", "gemma4_e2b_head_argmax_int8.aimodel")]
+            return paths
         }
+    }
+
+    // Download targets the CURRENT mode still needs. Empty == everything is on disk.
+    func missingDownloads() -> [ModelDownloader.Item] {
         let models = docs().appendingPathComponent("models")
-        return paths
+        return modelPaths(for: mode)
             .filter { !FileManager.default.fileExists(atPath: models.appendingPathComponent($0.local).path) }
             .map { ModelDownloader.Item(remote: $0.remote, local: $0.local) }
+    }
+
+    // Headless model-download driver (GEMMA_DL_TEST=1) — installs the current mode's missing files
+    // without the UI, mirroring the Download button (device provisioning / CI).
+    func downloadSelfTest() async {
+        let items = missingDownloads()
+        print("[dl-test] mode=\(mode) missing=\(items.count)")
+        guard !items.isEmpty else { print("[dl-test] already installed"); return }
+        let dl = ModelDownloader()
+        let probe = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                print("[dl-test] \(Int(dl.fraction * 100))% \(dl.detail)")
+            }
+        }
+        await dl.fetch(repo: Self.defaultRepo(for: mode), items: items, into: docs().appendingPathComponent("models"))
+        probe.cancel()
+        print("[dl-test] done: \(dl.phase)")
+    }
+
+    // True when every file the current mode needs is on disk (its chat-ready set is installed).
+    var installedForCurrentMode: Bool { missingDownloads().isEmpty }
+
+    private func isInstalled(_ m: GemmaMode) -> Bool {
+        let models = docs().appendingPathComponent("models")
+        return modelPaths(for: m).allSatisfy {
+            FileManager.default.fileExists(atPath: models.appendingPathComponent($0.local).path)
+        }
+    }
+
+    // Files of the current mode safe to delete: present on disk and not still shared by another
+    // mode that is itself fully installed — so the shared `gemma4_gather_raw` PLE table is kept
+    // while ANE/⚡ stay installed and only freed once they're gone too.
+    private func deletableLocalDirs() -> [String] {
+        let models = docs().appendingPathComponent("models")
+        let protected = Set(
+            GemmaMode.allCases
+                .filter { $0 != mode && isInstalled($0) }
+                .flatMap { modelPaths(for: $0).map(\.local) }
+        )
+        return modelPaths(for: mode)
+            .map(\.local)
+            .filter { local in
+                !protected.contains(local)
+                    && FileManager.default.fileExists(atPath: models.appendingPathComponent(local).path)
+            }
+    }
+
+    // Remove the current mode's downloaded files from this device (always re-downloadable). Frees
+    // the loaded backend first so nothing is memory-mapped, and keeps files another installed mode
+    // still shares. The mode then drops back to its download panel.
+    func deleteCurrentModel() async {
+        backend = nil
+        pipelined?.unload(); pipelined = nil
+        vl?.unload(); vl = nil
+        gvl?.unload(); gvl = nil
+        vlImageAttached = false
+        loadedMode = nil
+        ready = false
+        let models = docs().appendingPathComponent("models")
+        for local in deletableLocalDirs() {
+            try? FileManager.default.removeItem(at: models.appendingPathComponent(local))
+        }
+        output = ""; stats = ""
+        status = "\(mode.downloadLabel) removed"
     }
 
     // Load (or re-load after a mode switch) the backend for the current mode.

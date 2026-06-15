@@ -56,6 +56,9 @@ struct CoreAIChatApp: App {
                         await Gemma4MonolithEngine.run()
                         return
                     }
+                    if ProcessInfo.processInfo.environment["GEMMA_DL_TEST"] == "1" {
+                        await engine.downloadSelfTest(); return
+                    }
                     await engine.load()
                     // Headless self-test for `devicectl process launch --console
                     // --environment-variables '{"GEMMA_PROMPT":"..."}'` — prints result + tok/s.

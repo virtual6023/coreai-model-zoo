@@ -1,5 +1,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
+#if canImport(AppKit)
+import AppKit
+#endif
 
 struct ContentView: View {
     @StateObject private var engine = DiffusionEngine()
@@ -94,12 +97,22 @@ struct ContentView: View {
                 } label: {
                     Label("Download & Load", systemImage: "arrow.down.circle")
                 }
+                .disabled(engine.status.isBusy)
             }
-            Button { showingFolderImporter = true } label: {
+            // Local… stays enabled even mid-download — tapping it cancels the transfer first.
+            Button {
+                if engine.isDownloadingOrLoading { engine.cancel() }
+                showingFolderImporter = true
+            } label: {
                 Label("Local…", systemImage: "folder")
             }
         }
-        .disabled(engine.status.isBusy)
+
+        if engine.isDownloadingOrLoading {
+            Button(role: .destructive) { engine.cancel() } label: {
+                Label("Cancel download", systemImage: "xmark.circle")
+            }
+        }
 
         statusLine
     }
@@ -207,17 +220,32 @@ struct ContentView: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 if let secs = engine.generateSeconds, engine.image != nil {
                     Text("\(engine.imageSize) · \(String(format: "%.1fs", secs))")
                         .font(.caption).foregroundStyle(.white.opacity(0.7))
                 }
                 if let url = engine.exportURL {
+                    Button {
+                        if let saved = engine.saveImageToDownloads() { reveal(saved) }
+                    } label: {
+                        Image(systemName: engine.savedURL != nil
+                              ? "checkmark.circle.fill" : "square.and.arrow.down")
+                    }
+                    .help("Save the image to Downloads")
                     ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
                 }
             }
+            .buttonStyle(.borderless)
             .padding(10)
         }
+    }
+
+    /// Reveal a saved file in Finder (macOS); no-op elsewhere.
+    private func reveal(_ url: URL) {
+        #if os(macOS)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        #endif
     }
 
     private func progressOverlay(value: Double, total: Double) -> some View {

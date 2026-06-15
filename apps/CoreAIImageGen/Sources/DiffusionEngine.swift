@@ -91,6 +91,7 @@ final class DiffusionEngine: ObservableObject {
     @Published var status: Status = .idle
     @Published var image: CGImage?
     @Published var exportURL: URL?
+    @Published var savedURL: URL?
     @Published var modelTitle: String = "—"
     @Published var loadSeconds: Double?
     @Published var generateSeconds: Double?
@@ -160,12 +161,12 @@ final class DiffusionEngine: ObservableObject {
                 await downloader.fetch(
                     repo: "https://huggingface.co/\(option.repoId)",
                     items: Self.directoryItems, into: dest)
+                try Task.checkCancellation()   // cancelled mid-download → clean exit, not .error
                 if case .failed(let msg) = downloader.phase { throw Self.err(msg) }
-                try Task.checkCancellation()
                 try await Self.fetchRootFiles(repoId: option.repoId, into: dest)
                 try await self.loadPipeline(at: dest)
             } catch is CancellationError {
-                // user started another action — leave state to that action
+                // user cancelled or started another action — cancel() owns the resulting state
             } catch {
                 self.status = .error("\(error)")
             }
@@ -246,6 +247,7 @@ final class DiffusionEngine: ObservableObject {
     func generate(prompt: String, negativePrompt: String, steps: Int, guidance: Float, seed: UInt32) {
         guard let pipeline, let desc = descriptor, canGenerate else { return }
         work?.cancel()
+        savedURL = nil
         let token = CancellationToken()
         cancelToken = token
         status = .generating(step: 0, total: steps)
@@ -288,10 +290,46 @@ final class DiffusionEngine: ObservableObject {
         }
     }
 
+    /// Cancel the in-flight work. Generation falls back to the loaded model (.ready); a
+    /// cancelled download/load drops to .idle (no model yet).
     func cancel() {
         cancelToken.cancel()
         work?.cancel()
-        if case .generating = status { status = .ready }
+        Self.setIdleTimerDisabled(false)
+        switch status {
+        case .generating: status = .ready
+        case .downloading, .loading: status = .idle
+        default: break
+        }
+    }
+
+    var isDownloadingOrLoading: Bool {
+        switch status { case .downloading, .loading: return true; default: return false }
+    }
+
+    // MARK: - Saving
+
+    /// Copy the just-generated PNG into the user's Downloads (macOS) / a share-ready temp
+    /// (iOS) and return the destination. Returns nil if there's nothing to save.
+    @discardableResult
+    func saveImageToDownloads() -> URL? {
+        guard let src = exportURL else { return nil }
+        let fm = FileManager.default
+        let name = "coreai-\(modelTitle.replacingOccurrences(of: " ", with: "-"))-\(Int(Date().timeIntervalSince1970)).png"
+        #if os(macOS)
+        let dir = (try? fm.url(for: .downloadsDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
+            ?? fm.temporaryDirectory
+        #else
+        let dir = (try? fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
+            ?? fm.temporaryDirectory
+        #endif
+        let target = dir.appendingPathComponent(name)
+        do {
+            if fm.fileExists(atPath: target.path) { try fm.removeItem(at: target) }
+            try fm.copyItem(at: src, to: target)
+            savedURL = target
+            return target
+        } catch { return nil }
     }
 
     // MARK: - Helpers

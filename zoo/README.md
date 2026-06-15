@@ -15,7 +15,6 @@ throughput.
 | [`rf-detr.md`](rf-detr.md) | RF-DETR + RF-DETR-Seg (detection / instance segmentation, Roboflow) | [🤗 RF-DETR-CoreAI](https://huggingface.co/mlboydaisuke/RF-DETR-CoreAI) | det ×4 + seg ×6 fp32, gated cpu+gpu (mask IoU 1.000), **8.6–59.1 ms/frame M4 Max GPU** |
 | [`qwen3-embedding.md`](qwen3-embedding.md) | Qwen3-Embedding (multilingual text embedder, last-token pooling + MRL, Alibaba) | [🤗 Qwen3-Embedding-0.6B-CoreAI](https://huggingface.co/mlboydaisuke/Qwen3-Embedding-0.6B-CoreAI) | 0.6B fp16, torch ladder exact + engine gate cos 0.999998, **25–45 ms/embedding M4 Max GPU** |
 | [`qwen3-reranker.md`](qwen3-reranker.md) | Qwen3-Reranker (cross-encoder reranker, yes/no logit score, Alibaba) | [🤗 Qwen3-Reranker-0.6B-CoreAI](https://huggingface.co/mlboydaisuke/Qwen3-Reranker-0.6B-CoreAI) | 0.6B fp16, torch ladder exact (P(yes) Δ=0) + engine gate Δ<5e-4, **45.7 ms/score M4 Max GPU** |
-| [`diffusion-gemma.md`](diffusion-gemma.md) | DiffusionGemma (block-diffusion **dLLM**, 26B-A4B MoE, Google) | [🤗 DiffusionGemma-26B-A4B-CoreAI](https://huggingface.co/mlboydaisuke/DiffusionGemma-26B-A4B-CoreAI) | **zoo's first diffusion-LM** · int8 ~51 GB Mac-only · engine ≡ port ("Paris"), real denoise schedule with fast graph reuse **~3 s/step, early-stop 3 steps** |
 
 ## The matrix (every meaningful platform × compute-unit cell, greedy, top-1 vs HF)
 

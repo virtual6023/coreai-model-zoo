@@ -1,8 +1,12 @@
 // DiffusionEngine — downloads / loads a Core AI diffusion bundle and generates
-// images using Apple's official CoreAIDiffusionPipeline runtime. Cross-platform:
-// macOS runs the 1024 full bundle; iOS runs the 512 / half bundle. The pipeline
-// type (FLUX.2 / SD3 / SD) is auto-detected from metadata.json, mirroring the
-// zoo's `diffusion-runner` reference tool.
+// images using Apple's official CoreAIDiffusionPipeline runtime. The pipeline type
+// (FLUX.2 / SD3 / SD) is auto-detected from metadata.json, mirroring the zoo's
+// `diffusion-runner` reference tool, so any `coreai.diffusion.export` bundle drops in.
+//
+// The hosted catalog is macOS-only: FLUX.2 klein 4B's peak footprint exceeds the iOS
+// per-process memory limit (measured ~0.4 GB over on a 12 GB iPhone 17 Pro — the text
+// encoder is not released before the transformer runs). The iOS app still loads smaller
+// diffusion bundles (e.g. Stable Diffusion) via "Local…".
 //
 // Model delivery uses the shared AppShared/ModelDownloader (range-chunked parallel
 // download with cross-launch resume and atomic bundle placement) for the `.aimodel`
@@ -41,13 +45,21 @@ final class DiffusionEngine: ObservableObject {
         let defaultGuidance: Float
     }
 
-    static let catalog: [ModelOption] = [
-        ModelOption(
-            repoId: "mlboydaisuke/FLUX.2-klein-4B-CoreAI",
-            bundleDirName: "FLUX.2-klein-4B",
-            title: "FLUX.2 klein 4B",
-            defaultSteps: 4, defaultGuidance: 1.0)
-    ]
+    // Hosted catalog — macOS only. FLUX.2 klein 4B overruns the iOS memory limit, so the
+    // iOS app ships with an empty catalog and loads smaller bundles via "Local…".
+    static let catalog: [ModelOption] = {
+        #if os(macOS)
+        return [
+            ModelOption(
+                repoId: "mlboydaisuke/FLUX.2-klein-4B-CoreAI",
+                bundleDirName: "FLUX.2-klein-4B",
+                title: "FLUX.2 klein 4B",
+                defaultSteps: 4, defaultGuidance: 1.0)
+        ]
+        #else
+        return []
+        #endif
+    }()
 
     enum Status: Equatable {
         case idle

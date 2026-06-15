@@ -29,10 +29,13 @@ supported by the Apple stack).
 
 | Model | Bundles | M4 Max @ 4 steps | Download |
 |---|---|---:|---|
-| FLUX.2 klein 4B (text→image) | macOS 1024 · iOS 512/half — int4-per-block, ~4 GB | 1024 ≈ 17.4 s · 512 ≈ 6.55 s | [HF](https://huggingface.co/mlboydaisuke/FLUX.2-klein-4B-CoreAI) |
+| FLUX.2 klein 4B (text→image) | **macOS** (1024, int4-per-block, ~4 GB) | 1024 ≈ 17.4 s | [HF](https://huggingface.co/mlboydaisuke/FLUX.2-klein-4B-CoreAI) |
 
 4-step distilled (guidance 1.0, discrete-flow scheduler). Run it from the
-[CoreAIImageGen app](../apps/CoreAIImageGen/) (iOS + macOS) or the `diffusion-runner` CLI.
+[CoreAIImageGen app](../apps/CoreAIImageGen/) (macOS) or the `diffusion-runner` CLI.
+**macOS-only**: at 4B the peak footprint (the text encoder stays resident through the
+transformer) runs ~0.4 GB over a 12 GB iPhone's per-process limit even AOT-compiled, so the
+iOS bundle is not shipped. Smaller diffusion bundles (Stable Diffusion 0.9B) run fine on iOS.
 
 ## Why artifacts and not just recipes?
 

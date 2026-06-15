@@ -4,11 +4,12 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @StateObject private var engine = DiffusionEngine()
 
-    @State private var selectedModel = DiffusionEngine.catalog.first!
+    // Optional: the iOS build ships an empty hosted catalog (load via "Local…").
+    @State private var selectedModel = DiffusionEngine.catalog.first
     @State private var prompt = "a watercolor painting of a red fox reading a book by candlelight, cozy, detailed"
     @State private var negativePrompt = ""
-    @State private var steps = DiffusionEngine.catalog.first!.defaultSteps
-    @State private var guidance = DiffusionEngine.catalog.first!.defaultGuidance
+    @State private var steps = DiffusionEngine.catalog.first?.defaultSteps ?? 4
+    @State private var guidance = DiffusionEngine.catalog.first?.defaultGuidance ?? 1.0
     @State private var seedText = "42"
     @State private var showingFolderImporter = false
 
@@ -72,23 +73,27 @@ struct ContentView: View {
     // MARK: - Control content (shared; wrapped in `group`/`card` per platform)
 
     @ViewBuilder private var modelControls: some View {
-        Picker("Model", selection: $selectedModel) {
-            ForEach(DiffusionEngine.catalog) { Text($0.title).tag($0) }
+        if !DiffusionEngine.catalog.isEmpty {
+            Picker("Model", selection: $selectedModel) {
+                ForEach(DiffusionEngine.catalog) { Text($0.title).tag(Optional($0)) }
+            }
+            #if os(macOS)
+            .labelsHidden()
+            #else
+            .pickerStyle(.menu)
+            #endif
+            .disabled(engine.status.isBusy)
         }
-        #if os(macOS)
-        .labelsHidden()
-        #else
-        .pickerStyle(.menu)
-        #endif
-        .disabled(engine.status.isBusy)
 
         HStack {
-            Button {
-                steps = selectedModel.defaultSteps
-                guidance = selectedModel.defaultGuidance
-                engine.loadFromHub(selectedModel)
-            } label: {
-                Label("Download & Load", systemImage: "arrow.down.circle")
+            if let model = selectedModel {
+                Button {
+                    steps = model.defaultSteps
+                    guidance = model.defaultGuidance
+                    engine.loadFromHub(model)
+                } label: {
+                    Label("Download & Load", systemImage: "arrow.down.circle")
+                }
             }
             Button { showingFolderImporter = true } label: {
                 Label("Local…", systemImage: "folder")
@@ -240,7 +245,10 @@ struct ContentView: View {
 
     private var placeholderText: String {
         switch engine.status {
-        case .idle: return "Pick a model and tap Download & Load to begin."
+        case .idle:
+            return DiffusionEngine.catalog.isEmpty
+                ? "Tap Local… to load a Core AI diffusion bundle (e.g. Stable Diffusion)."
+                : "Pick a model and tap Download & Load to begin."
         case .downloading: return "Downloading the converted bundle from Hugging Face — a few GB, cached after the first run."
         case .loading: return "Loading the model into the Core AI runtime…"
         case .ready: return "Enter a prompt and tap Generate."

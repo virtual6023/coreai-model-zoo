@@ -15,12 +15,14 @@ Measured numbers, bundle sizes, and per-config caveats live in the zoo cards:
 
 | App | Model | Image @ 4 steps |
 |---|---|---|
-| [`CoreAIImageGen/`](CoreAIImageGen/) | **FLUX.2 klein 4B** (text→image; iOS + macOS, one codebase) — [HF bundle](https://huggingface.co/mlboydaisuke/FLUX.2-klein-4B-CoreAI) | macOS 1024 ≈ 17.4 s · iOS 512/half ≈ 6.55 s |
+| [`CoreAIImageGen/`](CoreAIImageGen/) | **FLUX.2 klein 4B** (text→image, **macOS**) — [HF bundle](https://huggingface.co/mlboydaisuke/FLUX.2-klein-4B-CoreAI) | macOS 1024 ≈ 17.4 s |
 
 Runs on Apple's stock `CoreAIDiffusionPipeline` — **no model-code port**; any
 `coreai.diffusion.export` bundle (FLUX.2 / SD3 / SD) drops in. It needs **no `coreai-models`
 patch stack** (the diffusion runtime is unmodified), so its build is self-contained — see
-[`CoreAIImageGen/README.md`](CoreAIImageGen/).
+[`CoreAIImageGen/README.md`](CoreAIImageGen/). The hosted FLUX.2 model is macOS-only (4B
+overruns a 12 GB iPhone's memory limit); the iOS build runs smaller bundles (Stable
+Diffusion 0.9B) loaded via **Local…**.
 
 ## Model delivery
 

@@ -5,11 +5,24 @@ greedy-exact (top-1 vs the HF eager reference) on an iPhone 17 Pro running the i
 
 | App | Model | Decode (iPhone 17 Pro) |
 |---|---|---|
-| [`CoreAIChat/`](CoreAIChat/) | **Gemma 4 E2B** (text) with a GPU / ANE / ⚡ engine segment, **plus the ⚡pipelined model menu**: Qwen3.5-0.8B / Qwen3.5-2B / LFM2.5-1.2B / Granite-4.0-H-1B (one spec-parameterized `PipelinedBackend` drives them all) | **Gemma GPU 22 tok/s** (int4-k-means kernels) / **ANE 6** (int8 chunks) / **Gemma ⚡ 32.7 chat-surface** (int4lin, PLE table as a static graph input) / **Qwen ⚡ 69.7–74.0** (benchmark; 62–67 chat-surface, int8hu ship bundle) / **LFM ⚡ ~40** / **Granite ⚡ ~31** — the ⚡ set rides Apple's `coreai-pipelined` engine, zero custom kernels |
+| [`CoreAIChat/`](CoreAIChat/) | **Gemma 4 E2B** (text) with a GPU / ANE / ⚡ engine segment, **plus the ⚡pipelined model menu**: Qwen3.5-0.8B / Qwen3.5-2B / LFM2.5-1.2B / Granite-4.0-H-1B (one spec-parameterized `PipelinedBackend` drives them all), plus **vision modes** Qwen3-VL 2B/4B + Gemma 4 E2B VL (photo attach) | **Gemma GPU 22 tok/s** (int4-k-means kernels) / **ANE 6** (int8 chunks) / **Gemma ⚡ 32.7 chat-surface** (int4lin, PLE table as a static graph input) / **Qwen ⚡ 69.7–74.0** (benchmark; 62–67 chat-surface, int8hu ship bundle) / **LFM ⚡ ~40** / **Granite ⚡ ~31** — the ⚡ set rides Apple's `coreai-pipelined` engine, zero custom kernels |
 | [`QwenChatFast/`](QwenChatFast/) | **Qwen3.5-0.8B** (hybrid linear+full attention) — static-shape loop-free decode, fused int8 Metal kernels + GPU argmax head, q16 chunked prefill, host-managed KV + SSM conv/rec state | **GPU 42.5–45.4 tok/s** decode · **147 tok/s** prefill (int8 kernels, ctx 2048; `QWEN_KIND=fp16` selects the previous fp16 path, 27.7) |
 
 Measured numbers, bundle sizes, and per-config caveats live in the zoo cards:
 [`zoo/gemma4-e2b.md`](../zoo/gemma4-e2b.md) · [`zoo/qwen3.5.md`](../zoo/qwen3.5.md).
+
+### macOS chat — CoreAIChatMac
+
+A desktop chat app on Apple's **stock runtime** with an in-app download catalog
+(`ModelCatalog.swift`) spanning two families, both loaded by one `ChatEngine` via the
+`coreai-sequential` variant:
+
+- **Official-recipe** bundles (`coreai.llm.export`, unmodified): Qwen3 0.6B/4B/8B,
+  Gemma 3 4B/12B IT, Mistral 7B v0.3, gpt-oss 20B (harmony output → a "Thinking" section).
+- **Zoo community ports** (engine patches / custom Metal kernels): Qwen3.6-35B-A3B,
+  Qwen3.6-27B, GLM-4.7-Flash, LFM2.5-8B-A1B, Gemma 4 12B/31B.
+
+See [`CoreAIChatMac/README.md`](CoreAIChatMac/README.md).
 
 ### Image generation
 

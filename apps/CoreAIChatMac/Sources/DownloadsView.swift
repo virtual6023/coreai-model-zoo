@@ -7,6 +7,7 @@ struct DownloadsView: View {
     @ObservedObject var engine: ChatEngine
     @StateObject private var downloader = ModelDownloader()
     @State private var active: String?          // id currently downloading
+    @State private var pendingDelete: DownloadableModel?   // awaiting delete confirmation
     @Environment(\.dismiss) private var dismiss
 
     private var modelsDir: URL { ChatEngine.appModelsDir }
@@ -26,6 +27,19 @@ struct DownloadsView: View {
             .listStyle(.inset)
         }
         .frame(width: 580, height: 440)
+        .confirmationDialog(
+            "Delete \(pendingDelete?.name ?? "model")?",
+            isPresented: Binding(get: { pendingDelete != nil },
+                                 set: { if !$0 { pendingDelete = nil } }),
+            presenting: pendingDelete
+        ) { m in
+            Button("Delete (~\(m.approxSizeGB) GB)", role: .destructive) {
+                engine.deleteModel(at: modelsDir.appendingPathComponent(m.local))
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { m in
+            Text("Removes it from this Mac. You can download it again later.")
+        }
     }
 
     private func installed(_ m: DownloadableModel) -> Bool {
@@ -45,6 +59,12 @@ struct DownloadsView: View {
             if installed(m) {
                 Label("Installed", systemImage: "checkmark.circle.fill")
                     .labelStyle(.iconOnly).foregroundStyle(.green)
+                Button(role: .destructive) { pendingDelete = m } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help("Delete from this Mac")
+                .disabled(downloader.busy)
             } else if active == m.id {
                 VStack(alignment: .trailing, spacing: 2) {
                     ProgressView(value: downloader.fraction).frame(width: 130)

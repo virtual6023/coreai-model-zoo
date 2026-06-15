@@ -63,17 +63,33 @@ final class ChatEngine: ObservableObject {
     private var engine: (any InferenceEngine)?
     private var tokenizer: (any Tokenizer)?
     private var generationTask: Task<Void, Never>?
+    private var genSeq = 0              // identifies the latest turn (stale tasks don't touch status)
+    private var stopRequested = false   // user pressed Stop — stop displaying, keep draining
 
     // MARK: - Model discovery
 
+    // Scan `folder` PLUS the app's own download directory, so models pulled via DownloadsView
+    // (which always land in appModelsDir) are listed even when the chosen folder is a different —
+    // or stale/deleted — path. Bundles found under both paths are de-duplicated.
     func scanFolder(_ folder: URL) {
+        scan(folders: [Self.appModelsDir, folder])
+    }
+
+    private func scan(folders: [URL]) {
         let fm = FileManager.default
-        let entries = (try? fm.contentsOfDirectory(
-            at: folder, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
-        models = entries
-            .filter { fm.fileExists(atPath: $0.appendingPathComponent("metadata.json").path) }
-            .map { ModelEntry(url: $0, sizeBytes: Self.directorySize($0.resolvingSymlinksInPath())) }
-            .sorted { $0.sizeBytes < $1.sizeBytes }
+        var seen = Set<String>()
+        var found: [ModelEntry] = []
+        for folder in folders {
+            let entries = (try? fm.contentsOfDirectory(
+                at: folder, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+            for url in entries
+            where fm.fileExists(atPath: url.appendingPathComponent("metadata.json").path) {
+                let resolved = url.resolvingSymlinksInPath()
+                guard seen.insert(resolved.path).inserted else { continue }   // same bundle via two paths
+                found.append(ModelEntry(url: url, sizeBytes: Self.directorySize(resolved)))
+            }
+        }
+        models = found.sorted { $0.sizeBytes < $1.sizeBytes }
     }
 
     private static func directorySize(_ url: URL) -> Int64 {
@@ -85,6 +101,26 @@ final class ChatEngine: ObservableObject {
             total += Int64((try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
         }
         return total
+    }
+
+    // Delete a model bundle from disk (it can always be re-downloaded). If it's the one currently
+    // loaded, tear the engine down first so its memory-mapped files are released, then drop it from
+    // the list. Matched by resolved path so it works whether the URL came from the sidebar entry or
+    // a freshly-built download path.
+    func deleteModel(at url: URL) {
+        let target = url.resolvingSymlinksInPath().path
+        if let sel = selectedModel, sel.url.resolvingSymlinksInPath().path == target {
+            generationTask?.cancel()
+            generationTask = nil
+            engine = nil
+            tokenizer = nil
+            selectedModel = nil
+            messages = []
+            stats = LiveStats()
+            status = .idle
+        }
+        try? FileManager.default.removeItem(at: url)
+        models.removeAll { $0.url.resolvingSymlinksInPath().path == target }
     }
 
     // MARK: - Load
@@ -113,8 +149,14 @@ final class ChatEngine: ObservableObject {
                 let modelURL = try bundle.requireModelURL(for: ModelBundle.ComponentKey.main)
 
                 let start = SuspendingClock.now
+                // These zoo bundles are decode-pipelined (custom Metal-kernel) models. The factory's
+                // auto-detect maps every "dynamic" structure to the GPU "pipelined" variant, whose
+                // logits path asserts in GrowingLogitsBuffer for them (SIGTRAP on load). The
+                // "coreai-sequential" variant is the one that drives these bundles correctly; it is
+                // also compatible with any other dynamic bundle (chunked-static ones throw cleanly).
                 async let engineResult = EngineFactory.createEngine(
-                    config: configData, modelURL: modelURL)
+                    config: configData, modelURL: modelURL,
+                    options: EngineOptions(variant: "coreai-sequential"))
                 async let tokenizerResult = bundle.loadTokenizer()
                 let loadedEngine = try await engineResult
                 let loadedTokenizer = try await tokenizerResult
@@ -146,6 +188,9 @@ final class ChatEngine: ObservableObject {
         stats.ttftSeconds = nil
         stats.generatedTokens = 0
         stats.tokensPerSecond = nil
+        stopRequested = false
+        genSeq += 1
+        let seq = genSeq
 
         // Full-history prompt via the bundle's own chat template (multi-turn).
         // Assistant turns feed back only the final answer (harmony convention).
@@ -153,68 +198,84 @@ final class ChatEngine: ObservableObject {
             ["role": $0.role == .user ? "user" : "assistant", "content": $0.content]
         }
 
+        // The CoreAI engine `generate()` runs an UNSTRUCTURED task that produces exactly `maxTokens`
+        // and can't be cancelled (no `onTermination`, no stop in `InferenceOptions`). Stop sequences
+        // only halt the DISPLAY, not the engine — so after a short answer the engine keeps cranking
+        // in the background. `reset()` then hard-asserts (`drain()` SIGTRAP) if called while it's
+        // busy. So: (1) wait for the previous turn to fully drain before reusing the engine,
+        // (2) consume this turn's stream to its end (drain) even after the visible answer stops,
+        // (3) cap `maxTokens` so a drain is bounded. The user can keep typing once the answer is in;
+        // the next turn just awaits the (usually finished) drain.
+        let previous = generationTask
         generationTask = Task {
+            await previous?.value
             do {
                 let promptTokens = try tokenizer.applyChatTemplate(messages: history)
-                self.stats.promptTokens = promptTokens.count
-
+                if seq == self.genSeq { self.stats.promptTokens = promptTokens.count }
                 try await engine.reset()
-                let stream = DecodingStrategyFactory.create(type: .vanilla).decode(
-                    from: .tokens(promptTokens),
-                    tokenizer: tokenizer,
-                    inferenceEngine: engine,
-                    samplingConfiguration: SamplingConfiguration(temperature: 0.7),
-                    options: InferenceOptions(maxTokens: 2048, includeLogits: false),
-                    stopSequences: StopSequences(for: tokenizer)
-                )
 
+                let stops = StopSequences(for: tokenizer)
                 let requestStart = SuspendingClock.now
                 var firstTokenAt: SuspendingClock.Instant?
-                var raw = ""
-                var tokenCount = 0
+                var genTokens: [Int] = []       // for tokenizer.decode ([Int])
+                var recent: [Int32] = []         // for StopSequences.matches ([Int32])
+                var displaying = true        // false after a stop sequence / user Stop — keep draining
+                var emitted = 0
 
-                for try await chunk in stream {
-                    if Task.isCancelled { break }
+                for try await output in try engine.generate(
+                    with: promptTokens.map(Int32.init),
+                    samplingConfiguration: SamplingConfiguration(temperature: 0.7),
+                    inferenceOptions: InferenceOptions(maxTokens: 256, includeLogits: false)
+                ) {
+                    guard displaying else { continue }   // engine still producing — drain, don't show
+                    if self.stopRequested { displaying = false; self.finalize(&reply, replyID, seq); continue }
                     if firstTokenAt == nil {
                         firstTokenAt = .now
-                        self.stats.ttftSeconds = Self.seconds(from: requestStart, to: firstTokenAt!)
+                        if seq == self.genSeq { self.stats.ttftSeconds = Self.seconds(from: requestStart, to: firstTokenAt!) }
                     }
-                    raw += chunk.text
-                    tokenCount += 1
+                    recent.append(output.tokenId)
+                    if recent.count > stops.maxLength { recent.removeFirst(recent.count - stops.maxLength) }
+                    if stops.matches(recentTokens: recent) { displaying = false; self.finalize(&reply, replyID, seq); continue }
 
-                    let parsed = HarmonyParser.parse(raw)
+                    genTokens.append(Int(output.tokenId))
+                    emitted += 1
+                    let parsed = HarmonyParser.parse(tokenizer.decode(tokens: genTokens))
                     reply.thinking = parsed.thinking
                     reply.content = parsed.answer
                     self.update(replyID, with: reply)
-
-                    self.stats.generatedTokens = tokenCount
-                    if let first = firstTokenAt, tokenCount > 1 {
-                        let genElapsed = Self.seconds(from: first, to: .now)
-                        if genElapsed > 0 {
-                            self.stats.tokensPerSecond = Double(tokenCount - 1) / genElapsed
+                    if seq == self.genSeq {
+                        self.stats.generatedTokens = emitted
+                        if let first = firstTokenAt, emitted > 1 {
+                            let genElapsed = Self.seconds(from: first, to: .now)
+                            if genElapsed > 0 { self.stats.tokensPerSecond = Double(emitted - 1) / genElapsed }
                         }
                     }
                 }
-
-                reply.isStreaming = false
-                self.update(replyID, with: reply)
-                self.stats.footprintBytes = Self.physFootprint()
-                if ProcessInfo.processInfo.environment["CHATMAC_DEBUG"] != nil {
-                    print("RAW_OUTPUT_START\n\(raw)\nRAW_OUTPUT_END")
-                    print("PARSED thinking=\(reply.thinking.count) answer=\(reply.content.count)")
-                }
-                self.status = .ready
+                if displaying { self.finalize(&reply, replyID, seq) }   // hit maxTokens without a stop
             } catch {
                 reply.isStreaming = false
                 if reply.content.isEmpty { reply.content = "(generation failed: \(error))" }
                 self.update(replyID, with: reply)
-                self.status = .ready
+                if seq == self.genSeq { self.status = .ready }
             }
         }
     }
 
+    // Mark the visible reply done. Status/footprint are only touched by the LATEST turn, so a still-
+    // draining older turn can't stomp a newer turn's `.generating`.
+    private func finalize(_ reply: inout ChatMessage, _ id: UUID, _ seq: Int) {
+        reply.isStreaming = false
+        update(id, with: reply)
+        if seq == genSeq {
+            status = .ready
+            stats.footprintBytes = Self.physFootprint()
+        }
+    }
+
     func stopGeneration() {
-        generationTask?.cancel()
+        // The engine can't be interrupted mid-generation; stop showing tokens. It keeps draining in
+        // the background and the next turn waits for it.
+        stopRequested = true
     }
 
     private func update(_ id: UUID, with message: ChatMessage) {

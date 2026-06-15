@@ -42,7 +42,7 @@ protocol Gemma4Backend: AnyObject {
 enum ChatModel: String, CaseIterable, Identifiable {
     case gemma = "Gemma 4 E2B", qwen = "Qwen3.5 0.8B", qwen2b = "Qwen3.5 2B",
          lfm2 = "LFM2.5 1.2B", granite = "Granite 1B", qwen3vl = "Qwen3-VL 2B",
-         gemma4vl = "Gemma 4 VL"
+         qwen3vl4b = "Qwen3-VL 4B", gemma4vl = "Gemma 4 VL"
     var id: String { rawValue }
 }
 
@@ -53,7 +53,7 @@ enum ChatModel: String, CaseIterable, Identifiable {
 enum GemmaMode: String, CaseIterable, Identifiable {
     case gpu = "GPU", ane = "ANE", gemmaTbl = "Gemma⚡", qwen = "Qwen",
          qwen2b = "Qwen2B", lfm2 = "LFM", granite = "Granite", qwen3vl = "Qwen3VL",
-         gemma4vl = "Gemma4VL"
+         qwen3vl4b = "Qwen3VL4B", gemma4vl = "Gemma4VL"
     var id: String { rawValue }
     /// The model family this engine mode belongs to (the picker's top level).
     var chatModel: ChatModel {
@@ -64,6 +64,7 @@ enum GemmaMode: String, CaseIterable, Identifiable {
         case .lfm2: .lfm2
         case .granite: .granite
         case .qwen3vl: .qwen3vl
+        case .qwen3vl4b: .qwen3vl4b
         case .gemma4vl: .gemma4vl
         }
     }
@@ -78,6 +79,7 @@ enum GemmaMode: String, CaseIterable, Identifiable {
         case .lfm2: "LFM2.5 1.2B"
         case .granite: "Granite 4.0-H 1B"
         case .qwen3vl: "Qwen3-VL 2B (vision)"
+        case .qwen3vl4b: "Qwen3-VL 4B (vision)"
         case .gemma4vl: "Gemma 4 E2B VL (vision)"
         }
     }
@@ -89,11 +91,19 @@ enum GemmaMode: String, CaseIterable, Identifiable {
         case .qwen2b: PipelinedBackend.qwen2b
         case .lfm2: PipelinedBackend.lfm2
         case .granite: PipelinedBackend.granite
-        case .gpu, .ane, .qwen3vl, .gemma4vl: nil  // the VLMs drive their own backends
+        case .gpu, .ane, .qwen3vl, .qwen3vl4b, .gemma4vl: nil  // the VLMs drive their own backends
+        }
+    }
+    /// Non-nil for the Qwen3-VL modes (own backend with a fixed-grid vision tower).
+    var qwen3vlSpec: Qwen3VLBackend.Spec? {
+        switch self {
+        case .qwen3vl: Qwen3VLBackend.qwen3vl2b
+        case .qwen3vl4b: Qwen3VLBackend.qwen3vl4b
+        default: nil
         }
     }
     /// VLM modes (photo picker + image attach surface).
-    var isVL: Bool { self == .qwen3vl || self == .gemma4vl }
+    var isVL: Bool { self == .qwen3vl || self == .qwen3vl4b || self == .gemma4vl }
 }
 
 @MainActor
@@ -125,6 +135,7 @@ final class Gemma4ChatEngine: ObservableObject {
         case "lfm2", "lfm": mode = .lfm2
         case "granite": mode = .granite
         case "qwen3vl", "vl": mode = .qwen3vl
+        case "qwen3vl4b", "vl4b": mode = .qwen3vl4b
         case "gemma4vl", "gvl": mode = .gemma4vl
         default: mode = .gpu
         }
@@ -144,6 +155,7 @@ final class Gemma4ChatEngine: ObservableObject {
         case .lfm2: "https://huggingface.co/mlboydaisuke/LFM2.5-1.2B-CoreAI"
         case .granite: "https://huggingface.co/mlboydaisuke/granite-4.0-h-CoreAI"
         case .qwen3vl: "https://huggingface.co/mlboydaisuke/Qwen3-VL-2B-CoreAI"
+        case .qwen3vl4b: "https://huggingface.co/mlboydaisuke/Qwen3-VL-4B-CoreAI"
         case .gpu, .ane, .gemmaTbl, .gemma4vl: "https://huggingface.co/mlboydaisuke/gemma-4-E2B-CoreAI"
         }
     }
@@ -158,9 +170,10 @@ final class Gemma4ChatEngine: ObservableObject {
         case .qwen, .qwen2b, .lfm2, .granite:
             let spec = mode.pipelinedSpec!
             return [(spec.hfRemotePath, spec.bundleName)]
-        case .qwen3vl:
-            return [(Qwen3VLBackend.hfDecoderPath, Qwen3VLBackend.decoderBundle),
-                    (Qwen3VLBackend.hfVisionPath, Qwen3VLBackend.visionDir)]
+        case .qwen3vl, .qwen3vl4b:
+            let spec = mode.qwen3vlSpec!
+            return [(spec.hfDecoderPath, spec.decoderBundle),
+                    (spec.hfVisionPath, spec.visionDir)]
         case .gemma4vl:
             // decoder (provider aotc) + vision tower + the QAT PLE table set
             return [(Gemma4VLBackend.hfDecoderPath, Gemma4VLBackend.decoderBundle),
@@ -274,13 +287,13 @@ final class Gemma4ChatEngine: ObservableObject {
         let target = mode
         do {
             let tLoad = Date()
-            if target == .qwen3vl {
-                let b = Qwen3VLBackend()
+            if let vlSpec = target.qwen3vlSpec {
+                let b = Qwen3VLBackend(spec: vlSpec)
                 try await b.load()
                 vl = b
                 loadedMode = target
                 ready = true
-                status = "\(Qwen3VLBackend.label) ready · ctx \(b.ctx)"
+                status = "\(b.spec.label) ready · ctx \(b.ctx)"
             } else if target == .gemma4vl {
                 let b = Gemma4VLBackend()
                 try await b.load()
@@ -422,7 +435,7 @@ final class Gemma4ChatEngine: ObservableObject {
         do {
             if let vl {
                 try await vl.attach(cgImage: cgImage)
-                status = "\(Qwen3VLBackend.label) ready · image attached"
+                status = "\(vl.spec.label) ready · image attached"
             } else if let gvl {
                 try await gvl.attach(cgImage: cgImage)
                 status = "\(Gemma4VLBackend.label) ready · image attached"
@@ -437,7 +450,7 @@ final class Gemma4ChatEngine: ObservableObject {
         vl?.detachImage()
         gvl?.detachImage()
         vlImageAttached = false
-        if let vl { status = "\(Qwen3VLBackend.label) ready · ctx \(vl.ctx)" }
+        if let vl { status = "\(vl.spec.label) ready · ctx \(vl.ctx)" }
         if let gvl { status = "\(Gemma4VLBackend.label) ready · ctx \(gvl.ctx)" }
     }
 

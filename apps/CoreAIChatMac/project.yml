@@ -6,9 +6,11 @@ options:
     macOS: "27.0"
 
 packages:
+  # Local patched fork (NOT upstream apple/coreai-models): the catalog's decode-pipelined
+  # bundles load via the fork's CoreAIShared / CoreAILM additions. The iOS CoreAIChat app
+  # builds the same catalog models against this fork.
   coreai-models:
-    url: https://github.com/apple/coreai-models
-    branch: main
+    path: ../../coreai-models
 
 # Run config Release: the engine's per-token host work is ~3x slower unoptimized.
 schemes:
@@ -30,6 +32,8 @@ targets:
     dependencies:
       - package: coreai-models
         product: CoreAILM
+      - package: coreai-models
+        product: CoreAIShared            # low-level runtime: PreparedModel / InferenceFunction / NDArray
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.coreai.chatmac

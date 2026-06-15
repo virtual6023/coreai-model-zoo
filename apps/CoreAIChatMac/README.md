@@ -27,6 +27,18 @@ uv run coreai.llm.export openai/gpt-oss-20b
 
 Then in the app: **Choose Models Folder…** → select the `exports/` directory.
 
+## Download models in-app
+
+**Download Models…** in the sidebar streams published `.aimodel` bundles straight from
+Hugging Face into the app's models directory (resumable chunked transfer —
+`AppShared/ModelDownloader.swift`), so no local export is needed. The catalog
+(`ModelCatalog.swift`) covers two families:
+
+- **Official-recipe** (stock runtime, `macos/<name>.aimodel` in each `*-CoreAI-official`
+  repo): Qwen3 0.6B/4B/8B, Gemma 3 4B/12B IT, Mistral 7B v0.3, gpt-oss 20B.
+- **Zoo community ports** (engine patches / custom Metal kernels, `gpu-pipelined/<bundle>`):
+  Qwen3.6-35B-A3B, Qwen3.6-27B, GLM-4.7-Flash, LFM2.5-8B-A1B, Gemma 4 12B/31B.
+
 ## Notes
 
 - The model list shows any subdirectory containing a `metadata.json`.

@@ -6,6 +6,7 @@ struct ChatView: View {
     @AppStorage("modelsFolder") private var modelsFolderPath = ""
     @State private var draft = ""
     @State private var showingDownloads = false
+    @State private var pendingDelete: ModelEntry?   // awaiting delete confirmation
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -36,12 +37,17 @@ struct ChatView: View {
             }
         }
         .onChange(of: engine.status) {
-            if engine.status == .ready, !autoPromptSent,
-                let prompt = ProcessInfo.processInfo.environment["CHATMAC_PROMPT"] {
+            guard engine.status == .ready else { return }
+            let env = ProcessInfo.processInfo.environment
+            if !autoPromptSent, let prompt = env["CHATMAC_PROMPT"] {
                 autoPromptSent = true
                 engine.send(prompt)
-            } else if engine.status == .ready, autoPromptSent,
-                let snapshotPath = ProcessInfo.processInfo.environment["CHATMAC_SNAPSHOT"] {
+            } else if autoPromptSent, !secondPromptSent, let prompt2 = env["CHATMAC_PROMPT2"] {
+                // Multi-turn smoke test: a second turn exercises the reset()-after-generation path.
+                secondPromptSent = true
+                engine.send(prompt2)
+            } else if autoPromptSent, secondPromptSent || env["CHATMAC_PROMPT2"] == nil,
+                let snapshotPath = env["CHATMAC_SNAPSHOT"] {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                     snapshotCard(to: snapshotPath)
                 }
@@ -50,6 +56,7 @@ struct ChatView: View {
     }
 
     @State private var autoPromptSent = false
+    @State private var secondPromptSent = false
 
     // Renders a clean share-card PNG of the conversation + stats via
     // ImageRenderer (no screen-recording permission needed). Demo/docs hook,
@@ -83,6 +90,11 @@ struct ChatView: View {
                     Text(entry.sizeLabel).font(.caption).foregroundStyle(.secondary)
                 }
                 .tag(entry)
+                .contextMenu {
+                    Button(role: .destructive) { pendingDelete = entry } label: {
+                        Label("Delete from Mac", systemImage: "trash")
+                    }
+                }
             }
             .listStyle(.sidebar)
 
@@ -105,6 +117,19 @@ struct ChatView: View {
         .navigationSplitViewColumnWidth(min: 220, ideal: 260)
         .sheet(isPresented: $showingDownloads) {
             DownloadsView(engine: engine)
+        }
+        .confirmationDialog(
+            "Delete \(pendingDelete?.name ?? "model")?",
+            isPresented: Binding(get: { pendingDelete != nil },
+                                 set: { if !$0 { pendingDelete = nil } }),
+            presenting: pendingDelete
+        ) { entry in
+            Button("Delete (\(entry.sizeLabel))", role: .destructive) {
+                engine.deleteModel(at: entry.url)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Removes it from this Mac. You can download it again later.")
         }
     }
 

@@ -1,4 +1,6 @@
-// Qwen3VLBackend — Qwen3-VL-2B on the pipelined engine: the zoo's first VLM.
+// Qwen3VLBackend — Qwen3-VL 2B / 4B on the pipelined engine (the zoo's first
+// VLM). Both share the architecture (fixed-grid ViT, 3 deepstack levels); only
+// the decoder hidden size differs (2B 2048 / 4B 2560), carried in `Spec`.
 //
 // Two models under Documents/models/:
 //   * qwen3_vl_2b_instruct_decode_int8hu_s1 — the text decoder LanguageBundle
@@ -31,17 +33,38 @@ import Tokenizers
 
 @MainActor
 final class Qwen3VLBackend {
-    static let decoderBundle = "qwen3_vl_2b_instruct_decode_int8hu_s1"
-    static let visionDir = "qwen3_vl_2b_instruct_vision"
-    static let hfDecoderPath = "gpu-pipelined/qwen3_vl_2b_instruct_decode_int8hu_s1"
-    static let hfVisionPath = "gpu-pipelined/qwen3_vl_2b_instruct_vision"
-    static let label = "Qwen3-VL ⚡pipelined"
+    // Per-model wiring. 2B and 4B share the fixed-grid ViT (depth 24, 3 deepstack
+    // levels, vocab 151936); only the decoder hidden size differs, which sizes the
+    // image_embeds / deepstack_embeds buffers.
+    struct Spec: Sendable {
+        let decoderBundle: String   // dir under Documents/models/
+        let visionDir: String       // dir holding <visionDir>.aimodel
+        let hfDecoderPath: String   // subpath inside the HF repo
+        let hfVisionPath: String
+        let label: String
+        let hid: Int                // decoder hidden size (2B 2048 / 4B 2560)
+    }
+    nonisolated static let qwen3vl2b = Spec(
+        decoderBundle: "qwen3_vl_2b_instruct_decode_int8hu_s1",
+        visionDir: "qwen3_vl_2b_instruct_vision",
+        hfDecoderPath: "gpu-pipelined/qwen3_vl_2b_instruct_decode_int8hu_s1",
+        hfVisionPath: "gpu-pipelined/qwen3_vl_2b_instruct_vision",
+        label: "Qwen3-VL 2B ⚡pipelined", hid: 2048)
+    nonisolated static let qwen3vl4b = Spec(
+        decoderBundle: "qwen3_vl_4b_instruct_decode_int8hu_s1",
+        visionDir: "qwen3_vl_4b_instruct_vision",
+        hfDecoderPath: "gpu-pipelined/qwen3_vl_4b_instruct_decode_int8hu_s1",
+        hfVisionPath: "gpu-pipelined/qwen3_vl_4b_instruct_vision",
+        label: "Qwen3-VL 4B ⚡pipelined", hid: 2560)
 
-    // Architecture constants (448x448 grid)
+    let spec: Spec
+    init(spec: Spec) { self.spec = spec }
+
+    // Architecture constants (448x448 grid; shared by 2B/4B)
     private let V: Int32 = 151_936
     private let N = 196          // merged vision tokens (14x14)
     private let GRID = 14
-    private let HID = 2048
+    private var HID: Int { spec.hid }
     private let PATCHES = 784    // 28x28 pre-merge
     private let PATCH_DIM = 1536 // 3 * 2 * 16 * 16
 
@@ -68,7 +91,7 @@ final class Qwen3VLBackend {
         }
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let models = docs.appendingPathComponent("models")
-        let bundle = try LanguageBundle(at: models.appendingPathComponent(Self.decoderBundle))
+        let bundle = try LanguageBundle(at: models.appendingPathComponent(spec.decoderBundle))
         ctx = bundle.maxContextLength
 
         guard let device = MTLCreateSystemDefaultDevice() else { throw Self.err("no Metal device") }
@@ -105,10 +128,10 @@ final class Qwen3VLBackend {
         tokenizer = try await bundle.loadTokenizer()
 
         // vision tower (plain .aimodel, GPU)
-        let visURL = models.appendingPathComponent(Self.visionDir)
-            .appendingPathComponent("\(Self.visionDir).aimodel")
+        let visURL = models.appendingPathComponent(spec.visionDir)
+            .appendingPathComponent("\(spec.visionDir).aimodel")
         guard FileManager.default.fileExists(atPath: visURL.path) else {
-            throw Self.err("missing \(Self.visionDir).aimodel in Documents/models/\(Self.visionDir)")
+            throw Self.err("missing \(spec.visionDir).aimodel in Documents/models/\(spec.visionDir)")
         }
         var vo = SpecializationOptions(preferredComputeUnitKind: .gpu)
         vo.expectFrequentReshapes = false
@@ -120,7 +143,7 @@ final class Qwen3VLBackend {
 
         // 1-token warmup through the decoder graph
         _ = try await run(ids: [9707], maxTokens: 1, eos: nil, onText: { _ in })
-        print(PipelinedBackend.memLine("\(Self.label) loaded"))
+        print(PipelinedBackend.memLine("\(spec.label) loaded"))
     }
 
     func unload() {
@@ -232,7 +255,7 @@ final class Qwen3VLBackend {
         let stats = try await run(ids: ids, maxTokens: budget, eos: tokenizer.eosTokenId) { gen in
             onUpdate(tokenizer.decode(tokens: gen, skipSpecialTokens: true))
         }
-        print(PipelinedBackend.memLine("\(Self.label) gen"))
+        print(PipelinedBackend.memLine("\(spec.label) gen"))
         return stats
     }
 
@@ -252,7 +275,7 @@ final class Qwen3VLBackend {
             samplingConfiguration: SamplingConfiguration(temperature: 0),
             inferenceOptions: InferenceOptions(maxTokens: maxTokens)
         )
-        var stats = PipelinedBackend.GenStats(label: Self.label, prefillTok: ids.count)
+        var stats = PipelinedBackend.GenStats(label: spec.label, prefillTok: ids.count)
         var gen: [Int] = []
         let t0 = SuspendingClock.now
         var tGen = t0

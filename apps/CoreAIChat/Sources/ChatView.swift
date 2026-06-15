@@ -22,6 +22,7 @@ struct ChatView: View {
     @FocusState private var inputFocused: Bool
     @State private var photoItem: PhotosPickerItem?
     @State private var attachedThumb: UIImage?
+    @State private var showDeleteConfirm = false
 
     // Two-level selection over the flat engine mode: model (menu) x unit
     // (gemma-only segment).
@@ -36,6 +37,7 @@ struct ChatView: View {
                 case .lfm2: engine.mode = .lfm2
                 case .granite: engine.mode = .granite
                 case .qwen3vl: engine.mode = .qwen3vl
+                case .qwen3vl4b: engine.mode = .qwen3vl4b
                 case .gemma4vl: engine.mode = .gemma4vl
                 }
             })
@@ -94,6 +96,13 @@ struct ChatView: View {
                 repoURL = Gemma4ChatEngine.defaultRepo(for: engine.mode)
             }
         }
+        .confirmationDialog("Delete \(engine.mode.downloadLabel) files?",
+                            isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) { Task { await engine.deleteCurrentModel() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Frees space on this iPhone. You can download it again anytime.")
+        }
     }
 
     private var topBar: some View {
@@ -134,6 +143,13 @@ struct ChatView: View {
             Text(engine.status)
                 .font(.caption).foregroundStyle(engine.ready ? .green : .secondary)
                 .lineLimit(1)
+            // Free this model's files from the device (re-downloadable). Only when it's installed.
+            if engine.installedForCurrentMode {
+                Button(role: .destructive) { showDeleteConfirm = true } label: {
+                    Image(systemName: "trash")
+                }
+                .disabled(engine.busy || engine.loading)
+            }
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
         .glassEffect()
@@ -258,6 +274,7 @@ struct ChatView: View {
                     case .lfm2: "~1.5"
                     case .granite: "~1.2"
                     case .qwen3vl: "~3.1"
+                    case .qwen3vl4b: "~5.5"
                     case .gemma4vl: "~4.7"
                     }
                     Label("Download \(engine.mode.downloadLabel) set (\(size) GB)",

